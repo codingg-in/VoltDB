@@ -1,0 +1,98 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build-and-release:
+    runs-on: macos-14
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Swift
+        uses: swift-actions/setup-swift@v2
+        with:
+          swift-version: "5.10"
+
+      - name: Build Universal Release Binary
+        run: |
+          # 1. Build release executable for Apple Silicon (arm64)
+          swift build -c release --arch arm64
+          
+          # 2. Bundle into VoltDB.app
+          mkdir -p "VoltDB.app/Contents/MacOS"
+          mkdir -p "VoltDB.app/Contents/Resources"
+          cp ".build/arm64-apple-macosx/release/VoltDB" "VoltDB.app/Contents/MacOS/VoltDB"
+          
+          if [ -f "Sources/VoltDB/Resources/AppIcon.icns" ]; then
+            cp "Sources/VoltDB/Resources/AppIcon.icns" "VoltDB.app/Contents/Resources/AppIcon.icns"
+          fi
+          
+          # 3. Create Info.plist
+          VERSION="${GITHUB_REF_NAME#v}"
+          cat <<EOF > VoltDB.app/Contents/Info.plist
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+              <key>CFBundleExecutable</key>
+              <string>VoltDB</string>
+              <key>CFBundleIdentifier</key>
+              <string>com.voltdb.app</string>
+              <key>CFBundleName</key>
+              <string>VoltDB</string>
+              <key>CFBundlePackageType</key>
+              <string>APPL</string>
+              <key>CFBundleShortVersionString</key>
+              <string>${VERSION}</string>
+              <key>CFBundleVersion</key>
+              <string>${VERSION}</string>
+              <key>CFBundleIconFile</key>
+              <string>AppIcon</string>
+              <key>LSMinimumSystemVersion</key>
+              <string>14.0</string>
+              <key>NSHighResolutionCapable</key>
+              <true/>
+          </dict>
+          </plist>
+          EOF
+          
+          # 4. Ad-hoc Sign App Bundle with Entitlements
+          codesign --force --deep --sign - --entitlements VoltDB.entitlements VoltDB.app
+
+      - name: Install DMG Packaging Tools
+        run: |
+          brew install create-dmg
+
+      - name: Create DMG & ZIP Assets
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          
+          # Create .zip
+          ditto -c -k --sequesterRsrc --keepParent VoltDB.app "VoltDB-${TAG}-arm64.zip"
+          
+          # Create Drag-and-Drop .dmg with /Applications alias & styled layout
+          chmod +x create_dmg.sh
+          ./create_dmg.sh "${TAG#v}"
+          
+          # Generate SHA256 Checksums
+          shasum -a 256 "VoltDB-${TAG}-arm64.dmg" > "VoltDB-${TAG}-arm64.dmg.sha256"
+          shasum -a 256 "VoltDB-${TAG}-arm64.zip" > "VoltDB-${TAG}-arm64.zip.sha256"
+
+      - name: Upload Release Assets to GitHub
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            VoltDB-*-arm64.dmg
+            VoltDB-*-arm64.zip
+            VoltDB-*-arm64.dmg.sha256
+            VoltDB-*-arm64.zip.sha256
+          draft: false
+          prerelease: false
+          generate_release_notes: true

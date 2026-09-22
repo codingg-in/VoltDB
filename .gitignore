@@ -1,0 +1,32 @@
+# macOS System Files
+.DS_Store
+*/.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Swift Package Manager & Build Artifacts
+.build/
+build/
+Packages/
+Package.pins
+.swiftpm/
+
+# Xcode & DerivedData
+xcuserdata/
+*.xcodeproj/xcuserdata/
+*.xcworkspace/xcuserdata/
+DerivedData/
+.idea/
+
+# Compiled App Bundles & Release Archives
+VoltDB.app/
+*.dmg
+*.zip
+dmg_staging/
+
+# Local Testing, Logs, & User Artifacts
+.user_saved_connections.json
+*.log
+scratch/
+.system_generated/
