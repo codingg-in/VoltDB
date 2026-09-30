@@ -19,6 +19,7 @@ struct TableDataView: View {
     @State private var isLoading = false
     @State private var errorMessage: String? = nil
     @State private var stagedChanges = StagedChanges()
+    @State private var insertedRowIndices: Set<Int> = []
     
     private var totalPages: Int {
         max(1, Int(ceil(Double(totalRows) / Double(pageSize))))
@@ -86,8 +87,13 @@ struct TableDataView: View {
                     columns: res.columns,
                     rows: res.rows,
                     isEditable: true,
+                    stagedChanges: stagedChanges.changes,
+                    insertedRowIndices: insertedRowIndices,
                     onCellEdit: { row, col, newValue in
                         handleCellEdit(row: row, col: col, newValue: newValue, res: res)
+                    },
+                    onRowSelect: { rowIndex in
+                        tabState.selectedRowIndex = rowIndex
                     },
                     tableName: tableName
                 )
@@ -281,6 +287,25 @@ struct TableDataView: View {
                     }
                 }
                 
+                // New Row Button
+                Button {
+                    addNewRow()
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "plus")
+                            .font(.system(size: 10, weight: .bold))
+                        Text("New Row")
+                            .font(.system(size: 11, weight: .medium))
+                    }
+                    .foregroundColor(AppTheme.accent)
+                    .padding(.horizontal, 8)
+                    .frame(height: 20)
+                    .background(AppTheme.backgroundTertiary)
+                    .cornerRadius(4)
+                }
+                .buttonStyle(.plain)
+                .help("Add New Row")
+                
                 // Reload Button
                 Button {
                     loadData()
@@ -308,6 +333,9 @@ struct TableDataView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: .rollbackChanges)) { _ in
             rollbackStagedChanges()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .addNewRow)) { _ in
+            addNewRow()
         }
     }
     
@@ -368,41 +396,143 @@ struct TableDataView: View {
         }
     }
     
+    private func addNewRow() {
+        guard let res = result else { return }
+        
+        // Create a new row filled with DEFAULT for auto-increment/timestamp columns and NULL for others
+        var newRowValues: [QueryResult.CellValue] = []
+        for col in res.columns {
+            let colName = col.name.lowercased()
+            if colName == "id" || colName.hasSuffix("_id") && primaryKeyColumns.contains(where: { $0.lowercased() == colName }) {
+                newRowValues.append(.string("DEFAULT"))
+            } else if colName.hasSuffix("_at") || colName.hasSuffix("_on") || colName.contains("time") {
+                newRowValues.append(.string("DEFAULT"))
+            } else {
+                newRowValues.append(.null)
+            }
+        }
+        
+        let newRowIndex = res.rows.count
+        var updatedRows = res.rows
+        updatedRows.append(newRowValues)
+        
+        let updatedRes = QueryResult(
+            columns: res.columns,
+            rows: updatedRows,
+            affectedRows: res.affectedRows,
+            executionTime: res.executionTime,
+            error: res.error,
+            queryType: res.queryType
+        )
+        
+        self.result = updatedRes
+        self.insertedRowIndices.insert(newRowIndex)
+        
+        // Stage the insert change
+        var rowValuesDict: [String: QueryResult.CellValue] = [:]
+        for (i, c) in res.columns.enumerated() {
+            rowValuesDict[c.name] = newRowValues[i]
+        }
+        
+        let change = CellChange(
+            table: tableName,
+            database: database,
+            rowIndex: newRowIndex,
+            column: "*",
+            oldValue: .null,
+            newValue: .null,
+            changeType: .insert,
+            primaryKeyValues: rowValuesDict
+        )
+        stagedChanges.add(change)
+        
+        if let activeId = tabState.activeTabId,
+           let idx = tabState.tabs.firstIndex(where: { $0.id == activeId }) {
+            tabState.tabs[idx].stagedChanges = stagedChanges
+            tabState.setResult(for: activeId, result: updatedRes)
+        }
+        
+        tabState.selectedRowIndex = newRowIndex
+    }
+    
     private func handleCellEdit(row: Int, col: Int, newValue: QueryResult.CellValue, res: QueryResult) {
         guard row < res.rows.count && col < res.columns.count else { return }
         
         let oldValue = res.rows[row][col]
         let colName = res.columns[col].name
         
-        // Build primary key map for WHERE clause
-        var pkValues: [String: QueryResult.CellValue] = [:]
-        for pk in primaryKeyColumns {
-            if let colIndex = res.columns.firstIndex(where: { $0.name == pk }), colIndex < res.rows[row].count {
-                pkValues[pk] = res.rows[row][colIndex]
+        if insertedRowIndices.contains(row) {
+            // Updating a cell in an inserted row: update the staged insert's values
+            if let existingIdx = stagedChanges.changes.firstIndex(where: { $0.rowIndex == row && $0.changeType == .insert }) {
+                var updatedPKs = stagedChanges.changes[existingIdx].primaryKeyValues
+                updatedPKs[colName] = newValue
+                let updatedChange = CellChange(
+                    table: tableName,
+                    database: database,
+                    rowIndex: row,
+                    column: "*",
+                    oldValue: .null,
+                    newValue: .null,
+                    changeType: .insert,
+                    primaryKeyValues: updatedPKs
+                )
+                stagedChanges.changes[existingIdx] = updatedChange
             }
-        }
-        
-        // Fallback: If no explicit primary keys defined, include all unmodified original cell values
-        if pkValues.isEmpty {
-            for (index, c) in res.columns.enumerated() {
-                if index < res.rows[row].count {
-                    pkValues[c.name] = res.rows[row][index]
+        } else {
+            // Check if there is already an existing staged update for this cell
+            if let existingIdx = stagedChanges.changes.firstIndex(where: { $0.rowIndex == row && $0.column == colName && $0.changeType == .update }) {
+                let existing = stagedChanges.changes[existingIdx]
+                if newValue == existing.newValue {
+                    // Staged value is unchanged; preserve staged change!
+                    return
                 }
+                if newValue == existing.oldValue {
+                    // Reverted back to original database value: remove staged change
+                    stagedChanges.changes.remove(at: existingIdx)
+                    if let activeId = tabState.activeTabId,
+                       let idx = tabState.tabs.firstIndex(where: { $0.id == activeId }) {
+                        tabState.tabs[idx].stagedChanges = stagedChanges
+                    }
+                    return
+                }
+                // Value changed to a different new value: preserve original oldValue!
+                var updatedChange = existing
+                updatedChange.newValue = newValue
+                stagedChanges.changes[existingIdx] = updatedChange
+            } else {
+                if oldValue == newValue { return }
+                
+                // Build primary key map for WHERE clause
+                var pkValues: [String: QueryResult.CellValue] = [:]
+                for pk in primaryKeyColumns {
+                    if let colIndex = res.columns.firstIndex(where: { $0.name == pk }), colIndex < res.rows[row].count {
+                        pkValues[pk] = res.rows[row][colIndex]
+                    }
+                }
+                
+                // Fallback: If no explicit primary keys defined, include all unmodified original cell values
+                if pkValues.isEmpty {
+                    for (index, c) in res.columns.enumerated() {
+                        if index < res.rows[row].count {
+                            pkValues[c.name] = res.rows[row][index]
+                        }
+                    }
+                }
+                
+                let change = CellChange(
+                    table: tableName,
+                    database: database,
+                    rowIndex: row,
+                    column: colName,
+                    oldValue: oldValue,
+                    newValue: newValue,
+                    changeType: .update,
+                    primaryKeyValues: pkValues
+                )
+                
+                stagedChanges.add(change)
             }
         }
-        
-        let change = CellChange(
-            table: tableName,
-            database: database,
-            rowIndex: row,
-            column: colName,
-            oldValue: oldValue,
-            newValue: newValue,
-            changeType: .update,
-            primaryKeyValues: pkValues
-        )
-        
-        stagedChanges.add(change)
         
         // Update tab staged changes for status bar
         if let activeId = tabState.activeTabId,
@@ -421,6 +551,7 @@ struct TableDataView: View {
                 try await appState.dbManager.applyChanges(changesToApply)
                 await MainActor.run {
                     stagedChanges.clear()
+                    insertedRowIndices.removeAll()
                     if let activeId = tabState.activeTabId,
                        let idx = tabState.tabs.firstIndex(where: { $0.id == activeId }) {
                         tabState.tabs[idx].stagedChanges = stagedChanges
@@ -438,6 +569,7 @@ struct TableDataView: View {
     
     private func rollbackStagedChanges() {
         stagedChanges.clear()
+        insertedRowIndices.removeAll()
         if let activeId = tabState.activeTabId,
            let idx = tabState.tabs.firstIndex(where: { $0.id == activeId }) {
             tabState.tabs[idx].stagedChanges = stagedChanges

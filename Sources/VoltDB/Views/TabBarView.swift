@@ -53,7 +53,7 @@ struct TabBarView: View {
                 HStack(spacing: 2) {
                     // 1. Sidebar Toggle Button
                     Button {
-                        withAnimation(.easeInOut(duration: 0.2)) {
+                        withAnimation(.spring(response: 0.28, dampingFraction: 0.86)) {
                             isSidebarVisible.toggle()
                         }
                     } label: {
@@ -120,6 +120,7 @@ struct TabBarView: View {
                     }
             }
             .frame(width: isSidebarVisible ? max(180, sidebarWidth) : 180, alignment: .leading)
+            .animation(.spring(response: 0.28, dampingFraction: 0.86), value: isSidebarVisible)
             .background(
                 AppTheme.backgroundSecondary
                     .contentShape(Rectangle())
@@ -128,11 +129,11 @@ struct TabBarView: View {
                     }
             )
             
-            if isSidebarVisible {
-                Rectangle()
-                    .fill(AppTheme.border.opacity(0.25))
-                    .frame(width: 1)
-            }
+            Rectangle()
+                .fill(AppTheme.border.opacity(0.25))
+                .frame(width: isSidebarVisible ? 1 : 0)
+                .clipped()
+                .animation(.spring(response: 0.28, dampingFraction: 0.86), value: isSidebarVisible)
             
             // Middle: Horizontal Tab Strip with Dynamic Left/Right Scroll Arrows
             ScrollViewReader { proxy in
@@ -198,7 +199,7 @@ struct TabBarView: View {
                 }
             
             // Center / Right: Connection & DB Pill (Static Display)
-            HStack(spacing: 5) {
+            HStack(spacing: 4) {
                 Circle()
                     .fill(appState.connectionStatus == .connected ? AppTheme.success : (appState.connectionStatus == .connecting ? AppTheme.warning : AppTheme.error))
                     .frame(width: 6, height: 6)
@@ -207,30 +208,38 @@ struct TabBarView: View {
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundColor(AppTheme.textPrimary)
                     .lineLimit(1)
-                    .frame(maxWidth: 100, alignment: .leading)
                 
-                if appState.activeConnection?.isProduction == true {
-                    Text("PROD")
-                        .font(.system(size: 8, weight: .bold))
-                        .foregroundColor(.white)
+                HStack(spacing: 7) {
+                    if !appState.serverVersion.isEmpty {
+                        Text(appState.serverVersion)
+                            .font(.system(size: 8, weight: .regular).monospacedDigit())
+                            .foregroundColor(AppTheme.textSecondary)
+                    }
+                    
+                    if appState.activeConnection?.isProduction == true {
+                        Text("PROD")
+                            .font(.system(size: 7, weight: .bold))
+                            .foregroundColor(.white)
+                            .padding(.horizontal, 3)
+                            .padding(.vertical, 1)
+                            .background(
+                                RoundedRectangle(cornerRadius: 2.5)
+                                    .fill(Color.red.opacity(0.85))
+                            )
+                            .help("Production Environment")
+                    }
+                    
+                    Rectangle()
+                        .fill(AppTheme.border.opacity(0.6))
+                        .frame(width: 1, height: 10)
                         .padding(.horizontal, 4)
-                        .padding(.vertical, 1.5)
-                        .background(
-                            RoundedRectangle(cornerRadius: 3)
-                                .fill(Color.red.opacity(0.85))
-                        )
-                        .help("Production Environment")
+                    
+                    Text(databasePillText)
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundColor(databasePillColor)
+                        .lineLimit(1)
+                        .frame(maxWidth: 85, alignment: .leading)
                 }
-                
-                Text("|")
-                    .font(.system(size: 8))
-                    .foregroundColor(AppTheme.textMuted.opacity(0.6))
-                
-                Text(databasePillText)
-                    .font(.system(size: 10, weight: .medium))
-                    .foregroundColor(databasePillColor)
-                    .lineLimit(1)
-                    .frame(maxWidth: 85, alignment: .leading)
                 
                 // SSL Indicator
                 if appState.activeConnection?.useSSL == true && appState.connectionStatus == .connected {
@@ -240,7 +249,7 @@ struct TabBarView: View {
                         .help("SSL Encrypted Connection")
                 }
             }
-            .transaction { $0.animation = nil }
+            .contentTransition(.identity)
             .padding(.horizontal, 7)
             .padding(.vertical, 3)
             .background(AppTheme.backgroundTertiary)
@@ -285,7 +294,7 @@ struct TabBarView: View {
                 
                 // 3. Right Panel Toggle Button
                 Button {
-                    withAnimation(.easeInOut(duration: 0.2)) {
+                    withAnimation(.spring(response: 0.28, dampingFraction: 0.86)) {
                         isRightPanelVisible.toggle()
                     }
                 } label: {

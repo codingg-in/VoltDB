@@ -9,6 +9,8 @@ struct ContentView: View {
     
     @State private var sidebarWidth: CGFloat = 240
     @State private var isDraggingDivider: Bool = false
+    @State private var rightPanelWidth: CGFloat = 300
+    @State private var isDraggingRightDivider: Bool = false
     @State private var isSidebarVisible: Bool = true
     @State private var isRightPanelVisible: Bool = false
     @State private var showCommandPalette = false
@@ -37,148 +39,192 @@ struct ContentView: View {
                 }
             )
             
+            let currentSidebarWidth = max(180, min(sidebarWidth, 450))
+            let currentRightWidth = max(240, min(rightPanelWidth, 600))
+            
             HStack(spacing: 0) {
-                // Left Sidebar (Collapsible)
-                if isSidebarVisible {
+                // Left Sidebar (Smooth sliding with fixed-width content)
+                ZStack(alignment: .trailing) {
                     SidebarView()
-                        .frame(width: max(180, min(sidebarWidth, 450)))
-                        .background(AppTheme.backgroundSecondary)
-                        .transition(.move(edge: .leading).combined(with: .opacity))
-                    
-                    // Draggable Divider
-                    Rectangle()
-                        .fill(AppTheme.border.opacity(0.25))
-                        .frame(width: 1)
-                        .overlay(
-                            Rectangle()
-                                .fill(isDraggingDivider ? AppTheme.accent : Color.clear)
-                                .frame(width: 3)
-                        )
-                        .contentShape(Rectangle().inset(by: -3))
-                        .gesture(
-                            DragGesture()
-                                .onChanged { value in
-                                    isDraggingDivider = true
-                                    sidebarWidth = max(180, min(sidebarWidth + value.translation.width, 450))
-                                }
-                                .onEnded { _ in
-                                    isDraggingDivider = false
-                                }
-                        )
-                        .onHover { hovering in
-                            if hovering {
-                                NSCursor.resizeLeftRight.push()
-                            } else {
-                                NSCursor.pop()
-                            }
-                        }
+                        .frame(width: currentSidebarWidth)
+                        .offset(x: isSidebarVisible ? 0 : -currentSidebarWidth)
                 }
+                .frame(width: isSidebarVisible ? currentSidebarWidth : 0)
+                .clipped()
                 
-                // Center Work Area (Editor + Results)
-                ZStack {
-                    AppTheme.backgroundPrimary
-                    
-                    if appState.connectionStatus == .connecting {
-                        VStack(spacing: 12) {
-                            ProgressView()
-                                .controlSize(.regular)
-                            Text("Connecting to \(appState.activeConnection?.name ?? "Database")...")
-                                .font(.subheadline)
-                                .foregroundColor(AppTheme.textSecondary)
+                // Draggable Divider
+                Rectangle()
+                    .fill(AppTheme.border.opacity(0.25))
+                    .frame(width: isSidebarVisible ? 1 : 0)
+                    .clipped()
+                    .overlay(
+                        Rectangle()
+                            .fill(isDraggingDivider ? AppTheme.accent : Color.clear)
+                            .frame(width: isSidebarVisible ? 3 : 0)
+                    )
+                    .contentShape(Rectangle().inset(by: -3))
+                    .gesture(
+                        DragGesture()
+                            .onChanged { value in
+                                guard isSidebarVisible else { return }
+                                isDraggingDivider = true
+                                sidebarWidth = max(180, min(sidebarWidth + value.translation.width, 450))
+                            }
+                            .onEnded { _ in
+                                isDraggingDivider = false
+                            }
+                    )
+                    .onHover { hovering in
+                        if hovering && isSidebarVisible {
+                            NSCursor.resizeLeftRight.push()
+                        } else {
+                            NSCursor.pop()
                         }
-                    } else if case .error(let msg) = appState.connectionStatus {
-                        VStack(spacing: 16) {
-                            Image(systemName: "exclamationmark.triangle.fill")
-                                .font(.system(size: 32))
-                                .foregroundColor(AppTheme.error)
-                            Text("Connection Error")
-                                .font(.headline)
-                                .foregroundColor(AppTheme.textPrimary)
-                            Text(msg)
-                                .font(.caption)
-                                .foregroundColor(AppTheme.textSecondary)
-                                .multilineTextAlignment(.center)
-                                .padding(.horizontal, 32)
-                            
-                            HStack(spacing: 12) {
-                                if let activeConn = appState.activeConnection {
-                                    Button {
-                                        Task {
-                                            await appState.connect(config: activeConn)
+                    }
+                
+                // Center Work Area (Editor + Results + Bottom Status Bar)
+                VStack(spacing: 0) {
+                    ZStack {
+                        AppTheme.backgroundPrimary
+                        
+                        if appState.connectionStatus == .connecting {
+                            VStack(spacing: 12) {
+                                ProgressView()
+                                    .controlSize(.regular)
+                                Text("Connecting to \(appState.activeConnection?.name ?? "Database")...")
+                                    .font(.subheadline)
+                                    .foregroundColor(AppTheme.textSecondary)
+                            }
+                        } else if case .error(let msg) = appState.connectionStatus {
+                            VStack(spacing: 16) {
+                                Image(systemName: "exclamationmark.triangle.fill")
+                                    .font(.system(size: 32))
+                                    .foregroundColor(AppTheme.error)
+                                Text("Connection Error")
+                                    .font(.headline)
+                                    .foregroundColor(AppTheme.textPrimary)
+                                Text(msg)
+                                    .font(.caption)
+                                    .foregroundColor(AppTheme.textSecondary)
+                                    .multilineTextAlignment(.center)
+                                    .padding(.horizontal, 32)
+                                
+                                HStack(spacing: 12) {
+                                    if let activeConn = appState.activeConnection {
+                                        Button {
+                                            Task {
+                                                await appState.connect(config: activeConn)
+                                            }
+                                        } label: {
+                                            HStack(spacing: 6) {
+                                                Image(systemName: "arrow.clockwise")
+                                                    .font(.system(size: 11, weight: .bold))
+                                                Text("Retry Connection")
+                                                    .font(.system(size: 12, weight: .semibold))
+                                            }
+                                            .padding(.horizontal, 14)
+                                            .padding(.vertical, 7)
+                                            .background(AppTheme.accent)
+                                            .foregroundColor(.white)
+                                            .cornerRadius(6)
                                         }
+                                        .buttonStyle(.plain)
+                                    }
+                                    
+                                    Button {
+                                        openWindow(id: "launcher")
                                     } label: {
                                         HStack(spacing: 6) {
-                                            Image(systemName: "arrow.clockwise")
-                                                .font(.system(size: 11, weight: .bold))
-                                            Text("Retry Connection")
-                                                .font(.system(size: 12, weight: .semibold))
+                                            Image(systemName: "slider.horizontal.3")
+                                                .font(.system(size: 11))
+                                            Text("Open Connection Manager")
+                                                .font(.system(size: 12))
                                         }
                                         .padding(.horizontal, 14)
                                         .padding(.vertical, 7)
-                                        .background(AppTheme.accent)
-                                        .foregroundColor(.white)
+                                        .background(AppTheme.backgroundTertiary)
+                                        .foregroundColor(AppTheme.textPrimary)
                                         .cornerRadius(6)
+                                        .overlay(RoundedRectangle(cornerRadius: 6).stroke(AppTheme.border.opacity(0.5), lineWidth: 1))
                                     }
                                     .buttonStyle(.plain)
                                 }
-                                
-                                Button {
-                                    openWindow(id: "launcher")
-                                } label: {
-                                    HStack(spacing: 6) {
-                                        Image(systemName: "slider.horizontal.3")
-                                            .font(.system(size: 11))
-                                        Text("Open Connection Manager")
-                                            .font(.system(size: 12))
-                                    }
-                                    .padding(.horizontal, 14)
-                                    .padding(.vertical, 7)
-                                    .background(AppTheme.backgroundTertiary)
-                                    .foregroundColor(AppTheme.textPrimary)
-                                    .cornerRadius(6)
-                                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(AppTheme.border.opacity(0.5), lineWidth: 1))
-                                }
-                                .buttonStyle(.plain)
+                            }
+                        } else if let activeTab = tabState.activeTab {
+                            if activeTab.type == .query {
+                                QueryWorkspaceView(tab: activeTab)
+                                    .id(activeTab.id)
+                            } else if activeTab.type == .tableView {
+                                TableViewerView(database: activeTab.database, tableName: activeTab.tableName ?? "")
+                                    .id(activeTab.id)
+                            }
+                        } else {
+                            VStack(spacing: 12) {
+                                ProgressView()
+                                    .controlSize(.small)
+                                Text("Opening SQL Editor...")
+                                    .font(.caption)
+                                    .foregroundColor(AppTheme.textSecondary)
+                            }
+                            .onAppear {
+                                ensureEditorTabReady()
                             }
                         }
-                    } else if let activeTab = tabState.activeTab {
-                        if activeTab.type == .query {
-                            QueryWorkspaceView(tab: activeTab)
-                        } else if activeTab.type == .tableView {
-                            TableViewerView(database: activeTab.database, tableName: activeTab.tableName ?? "")
-                        }
-                    } else {
-                        VStack(spacing: 12) {
-                            ProgressView()
-                                .controlSize(.small)
-                            Text("Opening SQL Editor...")
-                                .font(.caption)
-                                .foregroundColor(AppTheme.textSecondary)
-                        }
-                        .onAppear {
-                            ensureEditorTabReady()
-                        }
                     }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    
+                    Divider()
+                    
+                    StatusBarView()
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 
-                // Right Details Panel (Collapsible)
-                if isRightPanelVisible {
-                    Rectangle()
-                        .fill(AppTheme.border.opacity(0.25))
-                        .frame(width: 1)
-                    
+                // Right Draggable Divider
+                Rectangle()
+                    .fill(AppTheme.border.opacity(0.25))
+                    .frame(width: isRightPanelVisible ? 1 : 0)
+                    .clipped()
+                    .overlay(
+                        Rectangle()
+                            .fill(isDraggingRightDivider ? AppTheme.accent : Color.clear)
+                            .frame(width: isRightPanelVisible ? 3 : 0)
+                    )
+                    .contentShape(Rectangle().inset(by: -3))
+                    .gesture(
+                        DragGesture()
+                            .onChanged { value in
+                                guard isRightPanelVisible else { return }
+                                isDraggingRightDivider = true
+                                rightPanelWidth = max(240, min(rightPanelWidth - value.translation.width, 600))
+                            }
+                            .onEnded { _ in
+                                isDraggingRightDivider = false
+                            }
+                    )
+                    .onHover { hovering in
+                        if hovering && isRightPanelVisible {
+                            NSCursor.resizeLeftRight.push()
+                        } else {
+                            NSCursor.pop()
+                        }
+                    }
+                
+                // Right Details Panel (Smooth sliding with fixed-width content)
+                ZStack(alignment: .leading) {
                     DetailsPanelView(onClose: {
-                        withAnimation(.easeInOut(duration: 0.2)) {
+                        withAnimation(.spring(response: 0.28, dampingFraction: 0.86)) {
                             isRightPanelVisible = false
                         }
                     })
-                    .transition(.move(edge: .trailing).combined(with: .opacity))
+                    .frame(width: currentRightWidth)
+                    .offset(x: isRightPanelVisible ? 0 : currentRightWidth)
                 }
+                .frame(width: isRightPanelVisible ? currentRightWidth : 0)
+                .clipped()
             }
+            .animation(.spring(response: 0.28, dampingFraction: 0.86), value: isSidebarVisible)
+            .animation(.spring(response: 0.28, dampingFraction: 0.86), value: isRightPanelVisible)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            
-            StatusBarView()
         }
         .ignoresSafeArea()
         .background(AppTheme.backgroundPrimary)
@@ -227,13 +273,13 @@ struct ContentView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: .toggleSidebar)) { _ in
             guard currentWindow?.isKeyWindow == true else { return }
-            withAnimation(.easeInOut(duration: 0.2)) {
+            withAnimation(.spring(response: 0.28, dampingFraction: 0.86)) {
                 isSidebarVisible.toggle()
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: .toggleRightPanel)) { _ in
-            guard currentWindow?.isKeyWindow == true else { return }
-            withAnimation(.easeInOut(duration: 0.2)) {
+            guard isTargetWindowActive else { return }
+            withAnimation(.spring(response: 0.28, dampingFraction: 0.86)) {
                 isRightPanelVisible.toggle()
             }
         }
@@ -361,7 +407,7 @@ struct ContentView: View {
             
             self.currentWindow = window
             
-            let delegate = WorkspaceWindowDelegate(appState: appState, openLauncher: {
+            let delegate = WorkspaceWindowDelegate(appState: appState, tabState: tabState, openLauncher: {
                 openWindow(id: "launcher")
             })
             self.windowCloseDelegate = delegate
@@ -405,17 +451,42 @@ struct ContentView: View {
 
 final class WorkspaceWindowDelegate: NSObject, NSWindowDelegate {
     private let appState: AppState
+    private let tabState: TabState
     private let openLauncher: () -> Void
     private var isDisconnectingAndClosing = false
     
-    init(appState: AppState, openLauncher: @escaping () -> Void) {
+    init(appState: AppState, tabState: TabState, openLauncher: @escaping () -> Void) {
         self.appState = appState
+        self.tabState = tabState
         self.openLauncher = openLauncher
     }
     
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         if isDisconnectingAndClosing {
             return true
+        }
+        
+        let modifiedTabs = tabState.tabs.filter { $0.stagedChanges.count > 0 }
+        if !modifiedTabs.isEmpty {
+            let total = modifiedTabs.reduce(0) { $0 + $1.stagedChanges.count }
+            let alert = NSAlert()
+            alert.messageText = "Uncommitted Changes in Query Output"
+            let names = modifiedTabs.map { "\($0.title) (\($0.stagedChanges.count))" }.joined(separator: ", ")
+            alert.informativeText = "This workspace has \(total) uncommitted \(total == 1 ? "change" : "changes") in query output (\(names)).\n\nIf you close this window, these uncommitted changes will be permanently lost.\n\nDo you want to discard your changes and close?"
+            alert.alertStyle = .warning
+            alert.addButton(withTitle: "Cancel")
+            alert.addButton(withTitle: "Discard and Close")
+            
+            NSApp.activate(ignoringOtherApps: true)
+            let res = alert.runModal()
+            if res != .alertSecondButtonReturn {
+                return false
+            }
+            
+            // User confirmed discard
+            for idx in tabState.tabs.indices {
+                tabState.tabs[idx].stagedChanges.clear()
+            }
         }
         
         if appState.connectionStatus == .connected || appState.connectionStatus == .connecting {

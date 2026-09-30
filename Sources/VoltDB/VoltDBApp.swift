@@ -81,6 +81,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         return false
     }
+    
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        let (totalChanges, tabsWithChanges) = TabState.uncommittedChangesSummary()
+        guard totalChanges > 0 else {
+            return .terminateNow
+        }
+        
+        let alert = NSAlert()
+        alert.messageText = "Uncommitted Changes in Query Output"
+        let tabsText = tabsWithChanges.joined(separator: ", ")
+        alert.informativeText = "You have \(totalChanges) uncommitted \(totalChanges == 1 ? "change" : "changes") in query output (\(tabsText)).\n\nIf you quit VoltDB now, these uncommitted changes will be permanently lost.\n\nDo you want to discard your changes and quit?"
+        alert.alertStyle = .warning
+        
+        alert.addButton(withTitle: "Cancel")
+        alert.addButton(withTitle: "Discard and Quit")
+        
+        // Cancel is default button (Return / Esc)
+        alert.buttons[0].keyEquivalent = "\r"
+        alert.buttons[1].keyEquivalent = "d"
+        alert.buttons[1].keyEquivalentModifierMask = [.command]
+        
+        NSApp.activate(ignoringOtherApps: true)
+        
+        let response = alert.runModal()
+        if response == .alertSecondButtonReturn {
+            // User explicitly chose "Discard and Quit": clear staged changes to avoid duplicate window alerts
+            for state in TabState.activeInstances.allObjects {
+                for idx in state.tabs.indices {
+                    state.tabs[idx].stagedChanges.clear()
+                }
+            }
+            return .terminateNow
+        } else {
+            return .terminateCancel
+        }
+    }
 }
 
 /// Root view for each independent window session.
@@ -231,6 +267,13 @@ struct VoltDBApp: App {
             }
 
             CommandMenu("Data") {
+                Button("New Row") {
+                    NotificationCenter.default.post(name: .addNewRow, object: nil)
+                }
+                .keyboardShortcut("n", modifiers: [.command, .shift])
+                
+                Divider()
+                
                 Button("Commit Changes") {
                     NotificationCenter.default.post(name: .commitChanges, object: nil)
                 }
@@ -239,7 +282,7 @@ struct VoltDBApp: App {
                 Button("Rollback Changes") {
                     NotificationCenter.default.post(name: .rollbackChanges, object: nil)
                 }
-                .keyboardShortcut("z", modifiers: [.command, .shift])
+                .keyboardShortcut("z", modifiers: [.command, .option])
 
                 Divider()
 
@@ -262,7 +305,7 @@ struct VoltDBApp: App {
                 }
                 .keyboardShortcut("b", modifiers: .command)
                 
-                Button("Toggle Inspector Panel") {
+                Button("Toggle Details Panel") {
                     NotificationCenter.default.post(name: .toggleRightPanel, object: nil)
                 }
                 .keyboardShortcut("i", modifiers: [.command, .option])
@@ -297,4 +340,6 @@ extension Notification.Name {
     static let toggleRightPanel = Notification.Name("VoltDB.toggleRightPanel")
     static let disconnectWorkspace = Notification.Name("VoltDB.disconnectWorkspace")
     static let connectToWorkspace = Notification.Name("VoltDB.connectToWorkspace")
+    static let stopQuery = Notification.Name("VoltDB.stopQuery")
+    static let addNewRow = Notification.Name("VoltDB.addNewRow")
 }

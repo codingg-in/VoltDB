@@ -32,12 +32,42 @@ struct EditorTab: Identifiable {
 
 @Observable
 class TabState {
+    @MainActor static let activeInstances = NSHashTable<TabState>.weakObjects()
+    
     var tabs: [EditorTab] = []
     var activeTabId: UUID? = nil
+    var selectedRowIndex: Int? = nil
     private var queryCounter: Int = 1
     var currentConnectionId: UUID? = nil
     
-    init() {}
+    init() {
+        if Thread.isMainThread {
+            MainActor.assumeIsolated {
+                TabState.activeInstances.add(self)
+            }
+        } else {
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    TabState.activeInstances.add(self)
+                }
+            }
+        }
+    }
+    
+    @MainActor
+    static func uncommittedChangesSummary() -> (totalCount: Int, tabsWithChanges: [String]) {
+        var total = 0
+        var tabNames: [String] = []
+        for state in activeInstances.allObjects {
+            for tab in state.tabs {
+                if tab.stagedChanges.count > 0 {
+                    total += tab.stagedChanges.count
+                    tabNames.append("\(tab.title) (\(tab.stagedChanges.count))")
+                }
+            }
+        }
+        return (total, tabNames)
+    }
     
     var activeTab: EditorTab? {
         get {
@@ -148,5 +178,22 @@ class TabState {
         if let index = tabs.firstIndex(where: { $0.id == tabId }) {
             tabs[index].isLoading = loading
         }
+    }
+    
+    // MARK: - Running Task Management (for query cancellation)
+    
+    private var runningTasks: [UUID: Task<Void, Never>] = [:]
+    
+    func setRunningTask(for tabId: UUID, task: Task<Void, Never>) {
+        runningTasks[tabId] = task
+    }
+    
+    func cancelRunningTask(for tabId: UUID) {
+        runningTasks[tabId]?.cancel()
+        runningTasks.removeValue(forKey: tabId)
+    }
+    
+    func clearRunningTask(for tabId: UUID) {
+        runningTasks.removeValue(forKey: tabId)
     }
 }

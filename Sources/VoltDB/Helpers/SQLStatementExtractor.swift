@@ -202,4 +202,26 @@ public struct SQLStatementExtractor {
         
         return statements.first?.text ?? cleanSQLStatement(fullText)
     }
+    
+    /// Extracts the principal table name from a SQL statement (e.g. SELECT * FROM vehicle -> vehicle)
+    public static func extractTableName(from sql: String) -> String? {
+        let clean = cleanSQLStatement(sql)
+        let pattern = #"(?i)\b(?:FROM|INTO|UPDATE)\s+[`"]?(?:[a-zA-Z0-9_]+[`"]?\.)?[`"]?([a-zA-Z0-9_]+)[`"]?"#
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: []) else { return nil }
+        let nsString = clean as NSString
+        let matches = regex.matches(in: clean, options: [], range: NSRange(location: 0, length: nsString.length))
+        
+        let excluded: Set<String> = ["dual", "information_schema", "performance_schema", "sys", "mysql"]
+        for match in matches.reversed() {
+            if match.numberOfRanges > 1 {
+                let range = match.range(at: 1)
+                let name = nsString.substring(with: range)
+                if !excluded.contains(name.lowercased()) {
+                    return name
+                }
+            }
+        }
+        return nil
+    }
 }
+

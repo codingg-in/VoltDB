@@ -43,7 +43,6 @@ struct SidebarView: View {
                         .font(.caption)
                         .foregroundColor(AppTheme.textSecondary)
                 }
-                .transaction { $0.animation = nil }
                 Spacer()
             } else {
                 ScrollView {
@@ -97,7 +96,6 @@ struct SidebarView: View {
                 }
             }
         }
-        .transaction { $0.animation = nil }
     }
     
     @ViewBuilder

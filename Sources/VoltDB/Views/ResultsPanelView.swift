@@ -4,7 +4,10 @@ struct ResultsPanelView: View {
     var result: QueryResult?
     var isLoading: Bool
     var isEditable: Bool = true
+    var stagedChanges: [CellChange] = []
+    var insertedRowIndices: Set<Int> = []
     var onCellEdit: ((Int, Int, QueryResult.CellValue) -> Void)? = nil
+    var onRowSelect: ((Int?) -> Void)? = nil
     var tableName: String? = nil
     
     var body: some View {
@@ -12,11 +15,29 @@ struct ResultsPanelView: View {
             AppTheme.backgroundPrimary.edgesIgnoringSafeArea(.all)
             
             if isLoading {
-                HStack(spacing: 12) {
-                    ProgressView()
-                        .scaleEffect(0.8)
-                    Text("Executing query...")
-                        .foregroundColor(AppTheme.textSecondary)
+                VStack(spacing: 12) {
+                    HStack(spacing: 12) {
+                        ProgressView()
+                            .scaleEffect(0.8)
+                        Text("Executing query...")
+                            .foregroundColor(AppTheme.textSecondary)
+                    }
+                    
+                    Button {
+                        NotificationCenter.default.post(name: .stopQuery, object: nil)
+                    } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: "stop.fill")
+                            Text("Stop Execution")
+                        }
+                        .font(.subheadline.weight(.medium))
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 7)
+                        .background(Color(hex: "#dc2626"))
+                        .foregroundColor(.white)
+                        .cornerRadius(6)
+                    }
+                    .buttonStyle(.plain)
                 }
             } else if let result = result {
                 if result.isError {
@@ -56,7 +77,10 @@ struct ResultsPanelView: View {
                         columns: result.columns,
                         rows: result.rows,
                         isEditable: isEditable,
+                        stagedChanges: stagedChanges,
+                        insertedRowIndices: insertedRowIndices,
                         onCellEdit: onCellEdit,
+                        onRowSelect: onRowSelect,
                         tableName: tableName
                     )
                 } else if result.queryType == .select {

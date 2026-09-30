@@ -100,6 +100,12 @@ actor MySQLManager {
     private var sshProcess: Process?
     private var sshLocalPort: Int?
     private var activeDatabase: String = ""
+    private var connectionThreadId: UInt32?
+    private var lastConnectHost: String = ""
+    private var lastConnectPort: Int = 3306
+    private var lastConnectUser: String = ""
+    private var lastConnectPassword: String = ""
+    private var lastConnectTLS: TLSConfiguration?
     
     init() {
         self.eventLoopGroup = MultiThreadedEventLoopGroup(numberOfThreads: 2)
@@ -150,6 +156,24 @@ actor MySQLManager {
             on: eventLoop
         )
         self.activeDatabase = config.database.trimmingCharacters(in: .whitespacesAndNewlines)
+        
+        // Cache connection details for KILL QUERY support
+        self.lastConnectHost = targetHost
+        self.lastConnectPort = targetPort
+        self.lastConnectUser = config.user
+        self.lastConnectPassword = password
+        self.lastConnectTLS = tlsConfig
+        
+        // Retrieve and cache the MySQL connection thread ID for cancellation
+        if let conn = self.connection {
+            if let rows = try? await conn.simpleQuery("SELECT CONNECTION_ID() AS id").get(),
+               let firstRow = rows.first,
+               let idData = firstRow.column("id"),
+               let idStr = idData.string,
+               let threadId = UInt32(idStr) {
+                self.connectionThreadId = threadId
+            }
+        }
     }
     
     func useDatabase(_ database: String) async throws {
@@ -174,6 +198,31 @@ actor MySQLManager {
         }
         self.sshProcess = nil
         self.sshLocalPort = nil
+    }
+    
+    /// Cancels the currently running query by sending KILL QUERY via a separate connection.
+    func cancelRunningQuery() async {
+        guard let threadId = self.connectionThreadId else { return }
+        guard !lastConnectHost.isEmpty else { return }
+        
+        let eventLoop = eventLoopGroup.next()
+        do {
+            let addr = try SocketAddress.makeAddressResolvingHost(lastConnectHost, port: lastConnectPort)
+            let killConn = try await MySQLConnection.connect(
+                to: addr,
+                username: lastConnectUser,
+                database: "",
+                password: lastConnectPassword,
+                tlsConfiguration: lastConnectTLS,
+                serverHostname: lastConnectHost,
+                on: eventLoop
+            ).get()
+            
+            _ = try? await killConn.simpleQuery("KILL QUERY \(threadId)").get()
+            _ = try? await killConn.close().get()
+        } catch {
+            // Best-effort cancellation — if the kill connection fails, the query will continue
+        }
     }
     
     deinit {

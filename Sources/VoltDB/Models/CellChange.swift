@@ -8,7 +8,7 @@ struct CellChange: Identifiable, Hashable {
     let rowIndex: Int
     let column: String
     let oldValue: QueryResult.CellValue
-    let newValue: QueryResult.CellValue
+    var newValue: QueryResult.CellValue
     let changeType: ChangeType
     let primaryKeyValues: [String: QueryResult.CellValue]
 
@@ -37,11 +37,21 @@ struct CellChange: Identifiable, Hashable {
 
         case .insert:
             // For insert, primaryKeyValues contains all column values for the new row
-            let columns = primaryKeyValues.keys.sorted().map {
+            let filteredKeys = primaryKeyValues.keys.sorted().filter { key in
+                // If value is DEFAULT, we can either omit it or write DEFAULT
+                true
+            }
+            let columns = filteredKeys.map {
                 let escCol = $0.replacingOccurrences(of: "`", with: "``")
                 return "`\(escCol)`"
             }.joined(separator: ", ")
-            let values = primaryKeyValues.keys.sorted().map { primaryKeyValues[$0]!.sqlLiteral }.joined(separator: ", ")
+            let values = filteredKeys.map { key -> String in
+                let val = primaryKeyValues[key]!
+                if val.description.uppercased() == "DEFAULT" {
+                    return "DEFAULT"
+                }
+                return val.sqlLiteral
+            }.joined(separator: ", ")
             return "INSERT INTO `\(escDB)`.`\(escTable)` (\(columns)) VALUES (\(values));"
 
         case .delete:

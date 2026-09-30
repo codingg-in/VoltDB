@@ -25,6 +25,27 @@ struct TableViewerView: View {
                 
                 Spacer()
                 
+                if selectedSubTab == .data {
+                    Button {
+                        NotificationCenter.default.post(name: .addNewRow, object: nil)
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: "plus")
+                                .font(.system(size: 10, weight: .bold))
+                            Text("New Row")
+                                .font(.system(size: 11, weight: .medium))
+                        }
+                        .foregroundColor(AppTheme.accent)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(AppTheme.backgroundTertiary)
+                        .cornerRadius(5)
+                        .overlay(RoundedRectangle(cornerRadius: 5).stroke(AppTheme.border.opacity(0.6), lineWidth: 1))
+                    }
+                    .buttonStyle(.plain)
+                    .help("Add New Row (⇧⌘N)")
+                }
+                
                 Picker("", selection: $selectedSubTab) {
                     ForEach(SubTab.allCases, id: \.self) { tab in
                         Text(tab.rawValue).tag(tab)

@@ -120,57 +120,80 @@ struct EditorToolbarView: View {
                 .fixedSize()
                 .help("Explain SQL Query")
                 
-                // 5. Execute Action Button (Blue Highlighted)
-                HStack(spacing: 0) {
+                // 5. Execute / Stop Action Button
+                if isLoading {
+                    // Stop Button (Red) — visible while query is executing
                     Button {
-                        NotificationCenter.default.post(name: .runCurrentQuery, object: nil)
+                        NotificationCenter.default.post(name: .stopQuery, object: nil)
                     } label: {
                         HStack(spacing: 5) {
-                            Image(systemName: "play.fill")
+                            Image(systemName: "stop.fill")
                                 .font(.system(size: 9, weight: .bold))
-                            Text("Execute")
+                            Text("Stop")
                                 .font(.system(size: 11, weight: .semibold))
                         }
                         .foregroundColor(.white)
-                        .padding(.leading, 8)
-                        .padding(.trailing, 6)
+                        .padding(.horizontal, 10)
                         .frame(height: 22)
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
-                    
-                    Rectangle()
-                        .fill(Color.white.opacity(0.3))
-                        .frame(width: 1, height: 13)
-                    
-                    Menu {
-                        Button("Execute Current (⌘↩)") {
+                    .background(Color(hex: "#dc2626"))
+                    .cornerRadius(4)
+                    .shadow(color: Color(hex: "#dc2626").opacity(0.3), radius: 2, x: 0, y: 1)
+                    .help("Stop Running Query")
+                } else {
+                    // Execute Button (Blue) — visible when idle
+                    HStack(spacing: 0) {
+                        Button {
                             NotificationCenter.default.post(name: .runCurrentQuery, object: nil)
-                        }
-                        Button("Execute All (⌃⇧⌘↩)") {
-                            NotificationCenter.default.post(name: .runAllQueries, object: nil)
-                        }
-                    } label: {
-                        Image(systemName: "chevron.down")
-                            .font(.system(size: 7, weight: .bold))
+                        } label: {
+                            HStack(spacing: 5) {
+                                Image(systemName: "play.fill")
+                                    .font(.system(size: 9, weight: .bold))
+                                Text("Execute")
+                                    .font(.system(size: 11, weight: .semibold))
+                            }
                             .foregroundColor(.white)
-                            .frame(width: 16, height: 22)
+                            .padding(.leading, 8)
+                            .padding(.trailing, 6)
+                            .frame(height: 22)
                             .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        
+                        Rectangle()
+                            .fill(Color.white.opacity(0.3))
+                            .frame(width: 1, height: 13)
+                        
+                        Menu {
+                            Button("Execute Current (⌘↩)") {
+                                NotificationCenter.default.post(name: .runCurrentQuery, object: nil)
+                            }
+                            Button("Execute All (⌃⇧⌘↩)") {
+                                NotificationCenter.default.post(name: .runAllQueries, object: nil)
+                            }
+                        } label: {
+                            Image(systemName: "chevron.down")
+                                .font(.system(size: 7, weight: .bold))
+                                .foregroundColor(.white)
+                                .frame(width: 16, height: 22)
+                                .contentShape(Rectangle())
+                        }
+                        .menuStyle(.borderlessButton)
+                        .menuIndicator(.hidden)
                     }
-                    .menuStyle(.borderlessButton)
-                    .menuIndicator(.hidden)
+                    .background(Color(hex: "#2563eb"))
+                    .cornerRadius(4)
+                    .shadow(color: Color(hex: "#2563eb").opacity(0.3), radius: 2, x: 0, y: 1)
+                    .help("Execute Current Query (⌘↩) / Execute All (⌃⇧⌘↩)")
                 }
-                .background(Color(hex: "#2563eb"))
-                .cornerRadius(4)
-                .shadow(color: Color(hex: "#2563eb").opacity(0.3), radius: 2, x: 0, y: 1)
-                .disabled(isLoading)
-                .opacity(isLoading ? 0.6 : 1.0)
-                .help("Execute Current Query (⌘↩) / Execute All (⌃⇧⌘↩)")
             }
             .fixedSize(horizontal: true, vertical: false)
         }
-        .transaction { $0.animation = nil }
+        .contentTransition(.identity)
         .padding(.horizontal, 10)
+        .frame(maxWidth: .infinity)
         .frame(height: 30)
         .background(Color(hex: "#181825"))
         .overlay(

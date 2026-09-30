@@ -10,6 +10,10 @@ struct QueryWorkspaceView: View {
     @State private var queryText: String = ""
     @State private var showDestructiveConfirmation = false
     @State private var pendingDestructiveSQL: String = ""
+    @State private var insertedRowIndices: Set<Int> = []
+    @State private var primaryKeyColumns: [String] = []
+    @State private var editorHeight: CGFloat = 220
+    @State private var isDraggingSplitter: Bool = false
     
     init(tab: EditorTab) {
         self.tab = tab
@@ -44,51 +48,72 @@ struct QueryWorkspaceView: View {
                 }
             )
             
-            // Split Editor + Results
-            VSplitView {
-                SQLEditorView(
-                    text: Binding(
-                        get: { tabState.activeTab?.queryText ?? queryText },
-                        set: { newText in
-                            queryText = newText
-                            if let activeId = tabState.activeTabId {
-                                tabState.updateQueryText(for: activeId, text: newText)
-                            }
-                        }
-                    ),
-                    tableNames: tables,
-                    columnNames: schemaState.allColumnsByDatabase[activeDB] ?? [],
-                    columnsByTable: schemaState.columnsByTable,
-                    databaseNames: dbs
-                )
-                .frame(minHeight: 120)
-                
-                ResultsPanelView(
-                    result: tabState.activeTab?.result ?? tab.result,
-                    isLoading: tabState.activeTab?.isLoading ?? tab.isLoading,
-                    isEditable: true,
-                    onCellEdit: { row, col, newVal in
-                        if let res = tabState.activeTab?.result {
-                            if row < res.rows.count && col < res.rows[row].count {
-                                var newRows = res.rows
-                                newRows[row][col] = newVal
-                                let updatedRes = QueryResult(
-                                    columns: res.columns,
-                                    rows: newRows,
-                                    affectedRows: res.affectedRows,
-                                    executionTime: res.executionTime,
-                                    error: res.error,
-                                    queryType: res.queryType
-                                )
+            // Split Editor + Results (Robust against sidebar resize)
+            GeometryReader { geo in
+                VStack(spacing: 0) {
+                    SQLEditorView(
+                        text: Binding(
+                            get: { tabState.activeTab?.queryText ?? queryText },
+                            set: { newText in
+                                queryText = newText
                                 if let activeId = tabState.activeTabId {
-                                    tabState.setResult(for: activeId, result: updatedRes)
+                                    tabState.updateQueryText(for: activeId, text: newText)
                                 }
                             }
+                        ),
+                        tableNames: tables,
+                        columnNames: schemaState.allColumnsByDatabase[activeDB] ?? [],
+                        columnsByTable: schemaState.columnsByTable,
+                        databaseNames: dbs
+                    )
+                    .frame(height: max(70, min(editorHeight, geo.size.height - 80)))
+                    
+                    // Draggable Divider
+                    Rectangle()
+                        .fill(AppTheme.border.opacity(0.35))
+                        .frame(height: 1)
+                        .overlay(
+                            Rectangle()
+                                .fill(isDraggingSplitter ? AppTheme.accent : Color.clear)
+                                .frame(height: 3)
+                        )
+                        .contentShape(Rectangle().inset(by: -3))
+                        .gesture(
+                            DragGesture()
+                                .onChanged { value in
+                                    isDraggingSplitter = true
+                                    editorHeight = max(70, min(editorHeight + value.translation.height, geo.size.height - 80))
+                                }
+                                .onEnded { _ in
+                                    isDraggingSplitter = false
+                                }
+                        )
+                        .onHover { hovering in
+                            if hovering {
+                                NSCursor.resizeUpDown.push()
+                            } else {
+                                NSCursor.pop()
+                            }
                         }
-                    },
-                    tableName: tabState.activeTab?.tableName
-                )
-                .frame(minHeight: 150)
+                    
+                    ResultsPanelView(
+                        result: tabState.activeTab?.result ?? tab.result,
+                        isLoading: tabState.activeTab?.isLoading ?? tab.isLoading,
+                        isEditable: true,
+                        stagedChanges: tabState.activeTab?.stagedChanges.changes ?? tab.stagedChanges.changes,
+                        insertedRowIndices: insertedRowIndices,
+                        onCellEdit: { row, col, newVal in
+                            if let res = tabState.activeTab?.result ?? tab.result {
+                                handleCellEdit(row: row, col: col, newValue: newVal, res: res)
+                            }
+                        },
+                        onRowSelect: { rowIndex in
+                            tabState.selectedRowIndex = rowIndex
+                        },
+                        tableName: tabState.activeTab?.tableName
+                    )
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
             }
         }
         .onAppear {
@@ -120,6 +145,22 @@ struct QueryWorkspaceView: View {
         .onReceive(NotificationCenter.default.publisher(for: .runAllQueries)) { _ in
             guard tabState.activeTab?.id == tab.id else { return }
             runAllQueriesInActiveTab()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .stopQuery)) { _ in
+            guard tabState.activeTab?.id == tab.id else { return }
+            stopCurrentQuery()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .addNewRow)) { _ in
+            guard tabState.activeTab?.id == tab.id else { return }
+            addNewRow()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .commitChanges)) { _ in
+            guard tabState.activeTab?.id == tab.id else { return }
+            commitStagedChanges()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .rollbackChanges)) { _ in
+            guard tabState.activeTab?.id == tab.id else { return }
+            rollbackStagedChanges()
         }
         .alert(
             "⚠️ Destructive Query on Production",
@@ -199,6 +240,16 @@ struct QueryWorkspaceView: View {
         runQuerySQL(fullText)
     }
     
+    private func stopCurrentQuery() {
+        guard let activeTab = tabState.activeTab else { return }
+        // Cancel the Swift Task (cooperative cancellation)
+        tabState.cancelRunningTask(for: activeTab.id)
+        // Send KILL QUERY to MySQL server to abort the running SQL
+        Task {
+            await appState.dbManager.cancelRunningQuery()
+        }
+    }
+    
     private func runQuerySQL(_ sql: String) {
         // Check for destructive statements on production connections
         if appState.activeConnection?.isProduction == true {
@@ -224,11 +275,35 @@ struct QueryWorkspaceView: View {
         let targetDB = currentDB
         tabState.setLoading(for: activeTab.id, loading: true)
         
-        Task {
+        let task = Task { @MainActor in
             let startTime = Date()
+            var detectedTable: String? = nil
+            for stmt in statements.reversed() {
+                if let t = SQLStatementExtractor.extractTableName(from: stmt) {
+                    detectedTable = t
+                    break
+                }
+            }
             do {
                 var lastResult: QueryResult? = nil
                 for stmt in statements {
+                    // Check for cancellation between statements
+                    if Task.isCancelled {
+                        let elapsed = Date().timeIntervalSince(startTime)
+                        let cancelledResult = QueryResult(
+                            columns: [],
+                            rows: [],
+                            affectedRows: 0,
+                            executionTime: elapsed,
+                            error: "Query cancelled by user.",
+                            queryType: .other
+                        )
+                        tabState.setResult(for: activeTab.id, result: cancelledResult)
+                        tabState.setLoading(for: activeTab.id, loading: false)
+                        tabState.clearRunningTask(for: activeTab.id)
+                        return
+                    }
+                    
                     let clean = SQLStatementExtractor.cleanSQLStatement(stmt)
                     if clean.isEmpty { continue }
                     lastResult = try await appState.dbManager.executeQuery(clean, database: targetDB)
@@ -237,30 +312,248 @@ struct QueryWorkspaceView: View {
                     }
                 }
                 
-                let finalResult = lastResult
-                await MainActor.run {
-                    if let res = finalResult {
-                        tabState.setResult(for: activeTab.id, result: res)
+                if Task.isCancelled {
+                    let elapsed = Date().timeIntervalSince(startTime)
+                    let cancelledResult = QueryResult(
+                        columns: [],
+                        rows: [],
+                        affectedRows: 0,
+                        executionTime: elapsed,
+                        error: "Query cancelled by user.",
+                        queryType: .other
+                    )
+                    tabState.setResult(for: activeTab.id, result: cancelledResult)
+                } else if let res = lastResult {
+                    tabState.setResult(for: activeTab.id, result: res)
+                    if let table = detectedTable {
+                        if let activeId = tabState.activeTabId,
+                           let idx = tabState.tabs.firstIndex(where: { $0.id == activeId }) {
+                            tabState.tabs[idx].tableName = table
+                        }
+                        if let cols = try? await appState.dbManager.getColumns(database: targetDB, table: table) {
+                            self.primaryKeyColumns = cols.filter { $0.isPrimaryKey }.map { $0.name }
+                        }
                     }
-                    tabState.setLoading(for: activeTab.id, loading: false)
+                    self.insertedRowIndices.removeAll()
                 }
+                tabState.setLoading(for: activeTab.id, loading: false)
+                tabState.clearRunningTask(for: activeTab.id)
             } catch {
                 let elapsed = Date().timeIntervalSince(startTime)
-                let formatted = ErrorFormatter.format(error)
+                let errorMsg: String
+                if Task.isCancelled {
+                    errorMsg = "Query cancelled by user."
+                } else {
+                    errorMsg = ErrorFormatter.format(error)
+                }
                 let errorResult = QueryResult(
                     columns: [],
                     rows: [],
                     affectedRows: 0,
                     executionTime: elapsed,
-                    error: formatted,
+                    error: errorMsg,
                     queryType: .other
                 )
+                tabState.setResult(for: activeTab.id, result: errorResult)
+                tabState.setLoading(for: activeTab.id, loading: false)
+                tabState.clearRunningTask(for: activeTab.id)
+            }
+        }
+        tabState.setRunningTask(for: activeTab.id, task: task)
+    }
+    
+    // MARK: - Grid Editing and Staging
+    
+    private func addNewRow() {
+        guard let res = tabState.activeTab?.result ?? tab.result, res.hasRows || !res.columns.isEmpty else { return }
+        
+        let targetTable = tabState.activeTab?.tableName ?? SQLStatementExtractor.extractTableName(from: tabState.activeTab?.queryText ?? queryText) ?? "result_table"
+        
+        var newRowValues: [QueryResult.CellValue] = []
+        for col in res.columns {
+            let colName = col.name.lowercased()
+            if colName == "id" || colName.hasSuffix("_id") || primaryKeyColumns.contains(where: { $0.lowercased() == colName }) {
+                newRowValues.append(.string("DEFAULT"))
+            } else if colName.hasSuffix("_at") || colName.hasSuffix("_on") || colName.contains("time") {
+                newRowValues.append(.string("DEFAULT"))
+            } else {
+                newRowValues.append(.null)
+            }
+        }
+        
+        let newRowIndex = res.rows.count
+        var updatedRows = res.rows
+        updatedRows.append(newRowValues)
+        
+        let updatedRes = QueryResult(
+            columns: res.columns,
+            rows: updatedRows,
+            affectedRows: res.affectedRows,
+            executionTime: res.executionTime,
+            error: res.error,
+            queryType: res.queryType
+        )
+        
+        insertedRowIndices.insert(newRowIndex)
+        
+        var rowValuesDict: [String: QueryResult.CellValue] = [:]
+        for (i, c) in res.columns.enumerated() {
+            rowValuesDict[c.name] = newRowValues[i]
+        }
+        
+        let change = CellChange(
+            table: targetTable,
+            database: currentDB,
+            rowIndex: newRowIndex,
+            column: "*",
+            oldValue: .null,
+            newValue: .null,
+            changeType: .insert,
+            primaryKeyValues: rowValuesDict
+        )
+        
+        if let activeId = tabState.activeTabId,
+           let idx = tabState.tabs.firstIndex(where: { $0.id == activeId }) {
+            tabState.tabs[idx].stagedChanges.add(change)
+            tabState.setResult(for: activeId, result: updatedRes)
+        }
+        
+        tabState.selectedRowIndex = newRowIndex
+    }
+    
+    private func handleCellEdit(row: Int, col: Int, newValue: QueryResult.CellValue, res: QueryResult) {
+        guard row < res.rows.count && col < res.columns.count else { return }
+        guard let activeId = tabState.activeTabId,
+              let tabIdx = tabState.tabs.firstIndex(where: { $0.id == activeId }) else { return }
+        
+        let oldValue = res.rows[row][col]
+        let colName = res.columns[col].name
+        let targetTable = tabState.tabs[tabIdx].tableName ?? SQLStatementExtractor.extractTableName(from: tabState.activeTab?.queryText ?? queryText) ?? "result_table"
+        
+        var newRows = res.rows
+        newRows[row][col] = newValue
+        let updatedRes = QueryResult(
+            columns: res.columns,
+            rows: newRows,
+            affectedRows: res.affectedRows,
+            executionTime: res.executionTime,
+            error: res.error,
+            queryType: res.queryType
+        )
+        tabState.setResult(for: activeId, result: updatedRes)
+        
+        var currentStaged = tabState.tabs[tabIdx].stagedChanges
+        
+        if insertedRowIndices.contains(row) {
+            if let existingIdx = currentStaged.changes.firstIndex(where: { $0.rowIndex == row && $0.changeType == .insert }) {
+                var updatedPKs = currentStaged.changes[existingIdx].primaryKeyValues
+                updatedPKs[colName] = newValue
+                let updatedChange = CellChange(
+                    table: targetTable,
+                    database: currentDB,
+                    rowIndex: row,
+                    column: "*",
+                    oldValue: .null,
+                    newValue: .null,
+                    changeType: .insert,
+                    primaryKeyValues: updatedPKs
+                )
+                currentStaged.changes[existingIdx] = updatedChange
+            }
+        } else {
+            // Check if there is already an existing staged update for this cell
+            if let existingIdx = currentStaged.changes.firstIndex(where: { $0.rowIndex == row && $0.column == colName && $0.changeType == .update }) {
+                let existing = currentStaged.changes[existingIdx]
+                if newValue == existing.newValue {
+                    // Staged value is unchanged; preserve staged change!
+                    return
+                }
+                if newValue == existing.oldValue {
+                    // Reverted back to original database value: remove staged change
+                    currentStaged.changes.remove(at: existingIdx)
+                    tabState.tabs[tabIdx].stagedChanges = currentStaged
+                    return
+                }
+                // Value changed to a different new value: preserve original oldValue!
+                var updatedChange = existing
+                updatedChange.newValue = newValue
+                currentStaged.changes[existingIdx] = updatedChange
+            } else {
+                if oldValue == newValue { return }
+                
+                var pkValues: [String: QueryResult.CellValue] = [:]
+                for pk in primaryKeyColumns {
+                    if let colIndex = res.columns.firstIndex(where: { $0.name == pk }), colIndex < res.rows[row].count {
+                        pkValues[pk] = res.rows[row][colIndex]
+                    }
+                }
+                if pkValues.isEmpty {
+                    for (index, c) in res.columns.enumerated() {
+                        if index < res.rows[row].count {
+                            pkValues[c.name] = res.rows[row][index]
+                        }
+                    }
+                }
+                
+                let change = CellChange(
+                    table: targetTable,
+                    database: currentDB,
+                    rowIndex: row,
+                    column: colName,
+                    oldValue: oldValue,
+                    newValue: newValue,
+                    changeType: .update,
+                    primaryKeyValues: pkValues
+                )
+                currentStaged.add(change)
+            }
+        }
+        
+        tabState.tabs[tabIdx].stagedChanges = currentStaged
+    }
+    
+    private func commitStagedChanges() {
+        guard let activeTab = tabState.activeTab, activeTab.stagedChanges.count > 0 else { return }
+        let changesToApply = activeTab.stagedChanges.changes
+        
+        tabState.setLoading(for: activeTab.id, loading: true)
+        Task {
+            do {
+                try await appState.dbManager.applyChanges(changesToApply)
                 await MainActor.run {
-                    tabState.setResult(for: activeTab.id, result: errorResult)
+                    if let activeId = tabState.activeTabId,
+                       let idx = tabState.tabs.firstIndex(where: { $0.id == activeId }) {
+                        tabState.tabs[idx].stagedChanges.clear()
+                    }
+                    self.insertedRowIndices.removeAll()
                     tabState.setLoading(for: activeTab.id, loading: false)
+                    self.runCurrentQuery()
+                }
+            } catch {
+                await MainActor.run {
+                    tabState.setLoading(for: activeTab.id, loading: false)
+                    let errorResult = QueryResult(
+                        columns: [],
+                        rows: [],
+                        affectedRows: 0,
+                        executionTime: 0,
+                        error: "Failed to commit changes: \(ErrorFormatter.format(error))",
+                        queryType: .other
+                    )
+                    tabState.setResult(for: activeTab.id, result: errorResult)
                 }
             }
         }
+    }
+    
+    private func rollbackStagedChanges() {
+        guard tabState.activeTab != nil else { return }
+        if let activeId = tabState.activeTabId,
+           let idx = tabState.tabs.firstIndex(where: { $0.id == activeId }) {
+            tabState.tabs[idx].stagedChanges.clear()
+        }
+        self.insertedRowIndices.removeAll()
+        self.runCurrentQuery()
     }
     
     /// Detects SQL statements that could cause irreversible data loss.
@@ -318,3 +611,4 @@ struct QueryWorkspaceView: View {
         }
     }
 }
+

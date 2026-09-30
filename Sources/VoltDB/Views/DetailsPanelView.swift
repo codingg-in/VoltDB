@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 struct DetailsPanelView: View {
     @Environment(AppState.self) private var appState
@@ -7,253 +8,373 @@ struct DetailsPanelView: View {
     
     var onClose: () -> Void
     
+    @State private var searchText: String = ""
+    @State private var copiedFieldName: String? = nil
+    
+    private var activeResult: QueryResult? {
+        tabState.activeTab?.result
+    }
+    
+    private var selectedRow: [QueryResult.CellValue]? {
+        guard let res = activeResult, !res.rows.isEmpty else { return nil }
+        let index = tabState.selectedRowIndex ?? 0
+        if index >= 0 && index < res.rows.count {
+            return res.rows[index]
+        }
+        return res.rows.first
+    }
+    
+    private var columns: [QueryResult.ColumnHeader] {
+        activeResult?.columns ?? []
+    }
+    
+    private var fieldItems: [FieldItem] {
+        guard let row = selectedRow else { return [] }
+        var items: [FieldItem] = []
+        for (i, col) in columns.enumerated() {
+            let val = i < row.count ? row[i] : .null
+            let isPk = isPrimaryKey(col.name)
+            let typeLabel = inferTypeLabel(name: col.name, val: val)
+            items.append(FieldItem(
+                id: i,
+                name: col.name,
+                value: val,
+                typeLabel: typeLabel,
+                isPrimaryKey: isPk
+            ))
+        }
+        return items
+    }
+    
+    private var filteredItems: [FieldItem] {
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if query.isEmpty { return fieldItems }
+        return fieldItems.filter {
+            $0.name.lowercased().contains(query) ||
+            $0.value.description.lowercased().contains(query) ||
+            $0.typeLabel.lowercased().contains(query)
+        }
+    }
+    
     var body: some View {
         VStack(spacing: 0) {
-            // Header
+            // Top Header: Blue "Details" Pill tab + Close button
             HStack {
-                HStack(spacing: 6) {
-                    Image(systemName: "info.circle.fill")
-                        .font(.system(size: 11))
-                        .foregroundColor(AppTheme.accent)
-                    Text("Inspector")
-                        .font(.system(size: 12, weight: .bold))
-                        .foregroundColor(AppTheme.textPrimary)
+                HStack(spacing: 0) {
+                    Text("Details")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 5)
+                        .background(Color(hex: "#007AFF"))
+                        .cornerRadius(6)
                 }
+                
                 Spacer()
+                
                 Button {
                     onClose()
                 } label: {
                     Image(systemName: "xmark")
-                        .font(.system(size: 10))
+                        .font(.system(size: 10, weight: .bold))
                         .foregroundColor(AppTheme.textMuted)
-                        .frame(width: 16, height: 16)
+                        .frame(width: 20, height: 20)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .help("Close Details")
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
-            .background(AppTheme.backgroundSecondary)
+            .background(Color(hex: "#1e1e24"))
+            
+            // Search Bar
+            HStack(spacing: 6) {
+                Image(systemName: "magnifyingglass")
+                    .font(.system(size: 11))
+                    .foregroundColor(Color(hex: "#8e8e93"))
+                
+                TextField("Search fields...", text: $searchText)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 12))
+                    .foregroundColor(AppTheme.textPrimary)
+                
+                if !searchText.isEmpty {
+                    Button {
+                        searchText = ""
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.system(size: 11))
+                            .foregroundColor(AppTheme.textMuted)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 5)
+            .background(Color(hex: "#2c2c34"))
+            .cornerRadius(6)
+            .padding(.horizontal, 12)
+            .padding(.top, 4)
+            .padding(.bottom, 8)
+            .background(Color(hex: "#1e1e24"))
+            
+            // Sub-header: Fields count
+            HStack {
+                Text("Fields")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(Color(hex: "#a1a1aa"))
+                
+                Spacer()
+                
+                Text("\(filteredItems.count)")
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundColor(Color(hex: "#a1a1aa"))
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 4)
+            .background(Color(hex: "#18181e"))
             
             Divider()
-                .background(AppTheme.border.opacity(0.3))
+                .background(Color(hex: "#2c2c36"))
             
-            ScrollView {
-                VStack(alignment: .leading, spacing: 14) {
-                    if let activeTab = tabState.activeTab {
-                        if activeTab.type == .tableView, let tableName = activeTab.tableName {
-                            tableInspectorSection(database: activeTab.database, tableName: tableName)
-                        } else {
-                            queryInspectorSection(tab: activeTab)
+            // Content List
+            if let _ = selectedRow, !fieldItems.isEmpty {
+                ScrollView {
+                    LazyVStack(spacing: 12) {
+                        ForEach(filteredItems) { item in
+                            fieldRow(for: item)
+                        }
+                    }
+                    .padding(12)
+                }
+            } else {
+                emptyState
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color(hex: "#18181e"))
+    }
+    
+    // MARK: - Field Row View
+    
+    @ViewBuilder
+    private func fieldRow(for item: FieldItem) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            // Label & Type badge
+            HStack(spacing: 6) {
+                if item.isPrimaryKey {
+                    Image(systemName: "key.fill")
+                        .font(.system(size: 9))
+                        .foregroundColor(Color(hex: "#facc15")) // yellow key
+                }
+                
+                Text(item.name)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(Color(hex: "#e4e4e7"))
+                
+                Spacer()
+                
+                // Type pill badge (e.g. number, date, string)
+                Text(item.typeLabel)
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundColor(Color(hex: "#a1a1aa"))
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 2)
+                    .background(Color(hex: "#272730"))
+                    .cornerRadius(8)
+            }
+            
+            // Value Box
+            valueBox(for: item)
+        }
+    }
+    
+    // MARK: - Value Box
+    
+    @ViewBuilder
+    private func valueBox(for item: FieldItem) -> some View {
+        let isJson = isJSONString(item.value.description)
+        let isNull = item.value.isNull
+        
+        VStack(alignment: .leading, spacing: 4) {
+            ZStack(alignment: isJson ? .bottomTrailing : .trailing) {
+                HStack(alignment: isJson ? .top : .center, spacing: 6) {
+                    if isNull {
+                        Text("NULL")
+                            .font(.system(size: 12, weight: .regular, design: .monospaced))
+                            .italic()
+                            .foregroundColor(Color(hex: "#71717a"))
+                    } else if isJson, let pretty = prettifyJSON(item.value.description) {
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            Text(pretty)
+                                .font(.system(size: 11, design: .monospaced))
+                                .foregroundColor(Color(hex: "#f9a8d4"))
+                                .textSelection(.enabled)
+                                .lineSpacing(2)
+                                .padding(.bottom, 16)
                         }
                     } else {
-                        emptyStateSection
+                        Text(item.value.description)
+                            .font(.system(size: 12, weight: .regular, design: .monospaced))
+                            .foregroundColor(Color(hex: "#f4f4f5"))
+                            .lineLimit(isJson ? nil : 4)
+                            .textSelection(.enabled)
                     }
                     
-                    connectionInfoSection
-                }
-                .padding(12)
-            }
-        }
-        .frame(width: 260)
-        .background(AppTheme.backgroundSecondary)
-    }
-    
-    // MARK: - Table Inspector
-    
-    @ViewBuilder
-    private func tableInspectorSection(database: String, tableName: String) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("TABLE DETAILS")
-                .font(.system(size: 10, weight: .bold))
-                .foregroundColor(AppTheme.textMuted)
-            
-            VStack(spacing: 6) {
-                detailRow(label: "Table", value: tableName, isMonospace: true)
-                detailRow(label: "Database", value: database, isMonospace: true)
-                
-                if let tableInfo = schemaState.tablesByDatabase[database]?.first(where: { $0.name == tableName }) {
-                    detailRow(label: "Type", value: tableInfo.type.displayName)
-                    if let rows = tableInfo.rowCount {
-                        detailRow(label: "Est. Rows", value: rows.formatted())
+                    if !isJson {
+                        Spacer(minLength: 4)
                     }
                 }
+                .padding(.horizontal, 10)
+                .padding(.vertical, isJson ? 8 : 6)
+                .frame(maxWidth: .infinity, alignment: .leading)
                 
-                if let cols = schemaState.columnsByTable[tableName] ?? schemaState.columnsByTable["\(database).\(tableName)"] {
-                    detailRow(label: "Columns", value: "\(cols.count)")
-                }
-            }
-            .padding(8)
-            .background(AppTheme.backgroundTertiary)
-            .cornerRadius(6)
-            
-            // Staged changes info
-            if let activeTab = tabState.activeTab, activeTab.stagedChanges.count > 0 {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("UNCOMMITTED CHANGES")
-                        .font(.system(size: 10, weight: .bold))
-                        .foregroundColor(AppTheme.warning)
-                    
-                    VStack(spacing: 4) {
-                        detailRow(label: "Staged Changes", value: "\(activeTab.stagedChanges.count)")
-                        if activeTab.stagedChanges.updateCount > 0 {
-                            detailRow(label: "Updates", value: "\(activeTab.stagedChanges.updateCount)")
-                        }
-                        if activeTab.stagedChanges.insertCount > 0 {
-                            detailRow(label: "Inserts", value: "\(activeTab.stagedChanges.insertCount)")
-                        }
-                        if activeTab.stagedChanges.deleteCount > 0 {
-                            detailRow(label: "Deletes", value: "\(activeTab.stagedChanges.deleteCount)")
-                        }
-                    }
-                    .padding(8)
-                    .background(AppTheme.backgroundTertiary)
-                    .cornerRadius(6)
-                }
-            }
-        }
-    }
-    
-    // MARK: - Query Inspector
-    
-    @ViewBuilder
-    private func queryInspectorSection(tab: EditorTab) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("QUERY STATS")
-                .font(.system(size: 10, weight: .bold))
-                .foregroundColor(AppTheme.textMuted)
-            
-            VStack(spacing: 6) {
-                detailRow(label: "Tab Name", value: tab.title)
-                detailRow(label: "Context DB", value: tab.database.isEmpty ? (appState.currentDatabase.isEmpty ? "default" : appState.currentDatabase) : tab.database)
-                
-                if let res = tab.result {
-                    if res.isError {
-                        detailRow(label: "Status", value: "Error", color: AppTheme.error)
-                    } else {
-                        detailRow(label: "Status", value: "Success", color: AppTheme.success)
-                        detailRow(label: "Runtime", value: String(format: "%.3f s", res.executionTime))
-                        detailRow(label: "Rows Returned", value: "\(res.rows.count.formatted())")
-                        detailRow(label: "Columns", value: "\(res.columns.count)")
-                    }
-                } else {
-                    detailRow(label: "Status", value: tab.isLoading ? "Running..." : "Idle")
-                }
-            }
-            .padding(8)
-            .background(AppTheme.backgroundTertiary)
-            .cornerRadius(6)
-            
-            // Quick Query Actions
-            VStack(alignment: .leading, spacing: 6) {
-                Text("ACTIONS")
-                    .font(.system(size: 10, weight: .bold))
-                    .foregroundColor(AppTheme.textMuted)
-                
-                VStack(spacing: 4) {
+                // Copy & expand buttons
+                HStack(spacing: 6) {
                     Button {
-                        NotificationCenter.default.post(name: .formatSQL, object: nil)
+                        copyValue(item.value.description, field: item.name)
                     } label: {
-                        HStack(spacing: 6) {
-                            Image(systemName: "text.alignleft")
-                                .font(.system(size: 10))
-                            Text("Format SQL Script")
-                                .font(.system(size: 11))
-                            Spacer()
-                            Text("⇧⌘I")
-                                .font(.system(size: 9))
-                                .foregroundColor(AppTheme.textMuted)
-                        }
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 5)
-                        .background(AppTheme.backgroundTertiary)
-                        .cornerRadius(4)
+                        Image(systemName: copiedFieldName == item.name ? "checkmark" : "doc.on.doc")
+                            .font(.system(size: 9))
+                            .foregroundColor(copiedFieldName == item.name ? Color(hex: "#22c55e") : Color(hex: "#71717a"))
+                            .frame(width: 16, height: 16)
+                            .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
-                    
-                    Button {
-                        NotificationCenter.default.post(name: .runCurrentQuery, object: nil)
-                    } label: {
-                        HStack(spacing: 6) {
-                            Image(systemName: "play.fill")
-                                .font(.system(size: 9))
-                                .foregroundColor(AppTheme.accent)
-                            Text("Run Current Statement")
-                                .font(.system(size: 11))
-                            Spacer()
-                            Text("⌘↩")
-                                .font(.system(size: 9))
-                                .foregroundColor(AppTheme.textMuted)
-                        }
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 5)
-                        .background(AppTheme.backgroundTertiary)
-                        .cornerRadius(4)
-                    }
-                    .buttonStyle(.plain)
+                    .help("Copy Value")
                 }
+                .padding(.trailing, 8)
+                .padding(.bottom, isJson ? 6 : 0)
             }
-        }
-    }
-    
-    // MARK: - Connection Info Section
-    
-    @ViewBuilder
-    private var connectionInfoSection: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("SERVER INFO")
-                .font(.system(size: 10, weight: .bold))
-                .foregroundColor(AppTheme.textMuted)
-            
-            VStack(spacing: 6) {
-                if let conn = appState.activeConnection {
-                    detailRow(label: "Connection", value: conn.name)
-                    detailRow(label: "Host", value: "\(conn.host):\(conn.port)", isMonospace: true)
-                    detailRow(label: "User", value: conn.user)
-                    detailRow(label: "SSL", value: conn.useSSL ? "Enabled" : "Disabled", color: conn.useSSL ? AppTheme.success : AppTheme.textSecondary)
-                    if conn.useSSHTunnel {
-                        detailRow(label: "Tunnel", value: "\(conn.sshHost)", isMonospace: true)
-                    }
-                }
-                
-                if !appState.serverVersion.isEmpty {
-                    detailRow(label: "Version", value: appState.serverVersion)
-                }
-            }
-            .padding(8)
-            .background(AppTheme.backgroundTertiary)
+            .background(Color(hex: "#22222a"))
             .cornerRadius(6)
+            .overlay(
+                RoundedRectangle(cornerRadius: 6)
+                    .stroke(Color(hex: "#2e2e38"), lineWidth: 1)
+            )
         }
     }
     
     // MARK: - Empty State
     
-    @ViewBuilder
-    private var emptyStateSection: some View {
-        VStack(spacing: 8) {
-            Image(systemName: "tray")
-                .font(.system(size: 20))
-                .foregroundColor(AppTheme.textMuted)
-            Text("No Active Session")
-                .font(.caption)
-                .foregroundColor(AppTheme.textSecondary)
-        }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 16)
-    }
-    
-    // MARK: - Helper Views
-    
-    @ViewBuilder
-    private func detailRow(label: String, value: String, isMonospace: Bool = false, color: Color = AppTheme.textPrimary) -> some View {
-        HStack {
-            Text(label)
-                .font(.system(size: 11))
-                .foregroundColor(AppTheme.textSecondary)
+    private var emptyState: some View {
+        VStack(spacing: 12) {
             Spacer()
-            Text(value)
-                .font(.system(size: 11, weight: .medium, design: isMonospace ? .monospaced : .default))
-                .foregroundColor(color)
-                .lineLimit(1)
+            Image(systemName: "list.bullet.rectangle")
+                .font(.system(size: 32))
+                .foregroundColor(Color(hex: "#52525b"))
+            Text("No Row Selected")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundColor(Color(hex: "#a1a1aa"))
+            Text("Select a row in the results table to view all its field details.")
+                .font(.system(size: 11))
+                .foregroundColor(Color(hex: "#71717a"))
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 24)
+            Spacer()
         }
     }
+    
+    // MARK: - Helpers
+    
+    private func copyValue(_ val: String, field: String) {
+        let pb = NSPasteboard.general
+        pb.clearContents()
+        pb.setString(val, forType: .string)
+        copiedFieldName = field
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+            if copiedFieldName == field {
+                copiedFieldName = nil
+            }
+        }
+    }
+    
+    private func isPrimaryKey(_ colName: String) -> Bool {
+        let lower = colName.lowercased()
+        if lower == "id" || lower.hasSuffix("_id") && lower == "id" { return true }
+        
+        if let tab = tabState.activeTab, let table = tab.tableName {
+            let db = tab.database
+            if let cols = schemaState.columnsByTable[table] ?? schemaState.columnsByTable["\(db).\(table)"] {
+                if let matched = cols.first(where: { $0.lowercased() == lower }) {
+                    // Check if PK
+                    return matched.lowercased() == "id"
+                }
+            }
+        }
+        return false
+    }
+    
+    private func inferTypeLabel(name: String, val: QueryResult.CellValue) -> String {
+        let lowerName = name.lowercased()
+        
+        switch val {
+        case .int:
+            return "number"
+        case .double:
+            return "number"
+        case .null:
+            if lowerName.contains("date") || lowerName.hasSuffix("_at") || lowerName.hasSuffix("_on") {
+                return "date"
+            }
+            if lowerName.hasSuffix("_id") || lowerName == "id" {
+                return "number"
+            }
+            return "string"
+        case .string(let s):
+            let trimmed = s.trimmingCharacters(in: .whitespacesAndNewlines)
+            if (trimmed.hasPrefix("{") && trimmed.hasSuffix("}")) || (trimmed.hasPrefix("[") && trimmed.hasSuffix("]")) {
+                if isJSONString(trimmed) { return "string" }
+            }
+            if isDateString(trimmed) || lowerName.hasSuffix("_at") || lowerName.hasSuffix("_on") || lowerName.contains("date") {
+                return "date"
+            }
+            if Int64(trimmed) != nil || Double(trimmed) != nil {
+                if lowerName.hasSuffix("_id") || lowerName == "id" || lowerName.contains("count") || lowerName.contains("amount") {
+                    return "number"
+                }
+            }
+            return "string"
+        case .data:
+            return "binary"
+        }
+    }
+    
+    private func isDateString(_ s: String) -> Bool {
+        // e.g. 2021-08-03 or 2021-08-03 19:50:54
+        if s.count >= 10 && s[s.index(s.startIndex, offsetBy: 4)] == "-" {
+            return true
+        }
+        return false
+    }
+    
+    private func isJSONString(_ s: String) -> Bool {
+        let trimmed = s.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard (trimmed.hasPrefix("{") && trimmed.hasSuffix("}")) || (trimmed.hasPrefix("[") && trimmed.hasSuffix("]")) else {
+            return false
+        }
+        guard let data = trimmed.data(using: .utf8) else { return false }
+        return (try? JSONSerialization.jsonObject(with: data, options: [])) != nil
+    }
+    
+    private func prettifyJSON(_ s: String) -> String? {
+        guard let data = s.data(using: .utf8),
+              let json = try? JSONSerialization.jsonObject(with: data, options: []),
+              let prettyData = try? JSONSerialization.data(withJSONObject: json, options: [.prettyPrinted, .sortedKeys]),
+              let prettyStr = String(data: prettyData, encoding: .utf8) else {
+            return nil
+        }
+        return prettyStr
+    }
+}
+
+// MARK: - Models
+
+struct FieldItem: Identifiable {
+    let id: Int
+    let name: String
+    let value: QueryResult.CellValue
+    let typeLabel: String
+    let isPrimaryKey: Bool
 }
