@@ -57,7 +57,7 @@ struct SQLEditorView: NSViewRepresentable {
         scrollView.contentView.postsBoundsChangedNotifications = true
         
         context.coordinator.textView = textView
-        
+
         NotificationCenter.default.addObserver(
             context.coordinator,
             selector: #selector(Coordinator.formatSQL),

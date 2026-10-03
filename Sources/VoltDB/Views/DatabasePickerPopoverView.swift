@@ -1,5 +1,6 @@
 import SwiftUI
 
+@MainActor
 struct DatabasePickerPopoverView: View {
     @Environment(AppState.self) private var appState
     @Environment(TabState.self) private var tabState
@@ -137,7 +138,6 @@ struct DatabasePickerPopoverView: View {
         Task {
             try? await appState.dbManager.useDatabase(name)
             await schemaState.loadTables(for: name)
-            await schemaState.loadAllColumns(for: name)
         }
     }
 }

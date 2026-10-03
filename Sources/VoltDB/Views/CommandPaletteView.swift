@@ -1,6 +1,7 @@
 import SwiftUI
 import AppKit
 
+@MainActor
 struct CommandPaletteView: View {
     @Environment(SchemaState.self) private var schemaState
     @Environment(TabState.self) private var tabState

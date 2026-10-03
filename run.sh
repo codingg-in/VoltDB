@@ -4,7 +4,7 @@ set -e
 DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 cd "$DIR"
 
-APP_VERSION="0.2.0"
+APP_VERSION="0.3.0"
 
 echo "⚡ Building VoltDB v${APP_VERSION}..."
 swift build

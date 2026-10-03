@@ -120,6 +120,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 }
 
 /// Root view for each independent window session.
+@MainActor
 struct WindowRootView: View {
     let connectionId: UUID?
     

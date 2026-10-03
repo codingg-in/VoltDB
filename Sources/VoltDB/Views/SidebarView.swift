@@ -1,5 +1,6 @@
 import SwiftUI
 
+@MainActor
 struct SidebarView: View {
     @Environment(SchemaState.self) private var schemaState
     @Environment(TabState.self) private var tabState

@@ -18,6 +18,9 @@ struct TableDataView: View {
     @State private var sortAscending = true
     @State private var isLoading = false
     @State private var errorMessage: String? = nil
+    @State private var commitErrorMessage: String? = nil
+    @State private var isShowingCommitReviewSheet: Bool = false
+    @State private var pendingCommitSQL: String = ""
     @State private var stagedChanges = StagedChanges()
     @State private var insertedRowIndices: Set<Int> = []
     
@@ -39,6 +42,33 @@ struct TableDataView: View {
             
             Divider()
             
+            // Commit Error Banner (non-destructive; keeps table visible so user can fix edits)
+            if let commitError = commitErrorMessage {
+                HStack(spacing: 8) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.system(size: 13))
+                        .foregroundColor(AppTheme.error)
+                    Text(commitError)
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundColor(AppTheme.textPrimary)
+                        .lineLimit(2)
+                    Spacer()
+                    Button {
+                        commitErrorMessage = nil
+                    } label: {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 10, weight: .bold))
+                            .foregroundColor(AppTheme.textSecondary)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Dismiss error")
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .background(AppTheme.error.opacity(0.15))
+                .overlay(Rectangle().frame(height: 1).foregroundColor(AppTheme.error.opacity(0.3)), alignment: .bottom)
+            }
+            
             // Main Grid or Status Area
             if isLoading && result == nil {
                 Spacer()
@@ -50,7 +80,7 @@ struct TableDataView: View {
                         .foregroundColor(AppTheme.textSecondary)
                 }
                 Spacer()
-            } else if let error = errorMessage {
+            } else if let error = errorMessage, result == nil {
                 Spacer()
                 VStack(spacing: 12) {
                     Image(systemName: "exclamationmark.triangle.fill")
@@ -95,7 +125,8 @@ struct TableDataView: View {
                     onRowSelect: { rowIndex in
                         tabState.selectedRowIndex = rowIndex
                     },
-                    tableName: tableName
+                    tableName: tableName,
+                    resultId: res.id
                 )
             } else {
                 Spacer()
@@ -337,6 +368,22 @@ struct TableDataView: View {
         .onReceive(NotificationCenter.default.publisher(for: .addNewRow)) { _ in
             addNewRow()
         }
+        .sheet(isPresented: $isShowingCommitReviewSheet) {
+            CommitReviewSheetView(
+                initialSQL: pendingCommitSQL.isEmpty ? stagedChanges.toSQL().joined(separator: "\n\n") : pendingCommitSQL,
+                database: database,
+                tableName: tableName,
+                changeCount: stagedChanges.count,
+                onApply: { finalSQL in
+                    try await applyFinalCommitSQL(finalSQL)
+                },
+                onCancel: {
+                    isShowingCommitReviewSheet = false
+                    pendingCommitSQL = ""
+                }
+            )
+            .id(pendingCommitSQL + "_\(stagedChanges.count)")
+        }
     }
     
     // MARK: - Data Operations
@@ -399,13 +446,18 @@ struct TableDataView: View {
     private func addNewRow() {
         guard let res = result else { return }
         
-        // Create a new row filled with DEFAULT for auto-increment/timestamp columns and NULL for others
+        // Create a new row with smart defaults based on ColumnInfo
         var newRowValues: [QueryResult.CellValue] = []
         for col in res.columns {
             let colName = col.name.lowercased()
-            if colName == "id" || colName.hasSuffix("_id") && primaryKeyColumns.contains(where: { $0.lowercased() == colName }) {
-                newRowValues.append(.string("DEFAULT"))
-            } else if colName.hasSuffix("_at") || colName.hasSuffix("_on") || colName.contains("time") {
+            let info = columns.first(where: { $0.name.lowercased() == colName })
+            
+            let isAutoInc = info?.extra.lowercased().contains("auto_increment") ?? false
+            let hasDefault = info?.defaultValue != nil
+            let isTimestamp = colName.hasSuffix("_at") || colName.hasSuffix("_on") || (info?.extra.lowercased().contains("current_timestamp") ?? false)
+            let isPKId = (colName == "id" || (primaryKeyColumns.count == 1 && primaryKeyColumns.contains(where: { $0.lowercased() == colName })))
+            
+            if isAutoInc || hasDefault || isTimestamp || isPKId {
                 newRowValues.append(.string("DEFAULT"))
             } else {
                 newRowValues.append(.null)
@@ -442,7 +494,8 @@ struct TableDataView: View {
             oldValue: .null,
             newValue: .null,
             changeType: .insert,
-            primaryKeyValues: rowValuesDict
+            primaryKeyValues: rowValuesDict,
+            columnOrder: res.columns.map(\.name)
         )
         stagedChanges.add(change)
         
@@ -461,6 +514,22 @@ struct TableDataView: View {
         let oldValue = res.rows[row][col]
         let colName = res.columns[col].name
         
+        // Update local result rows so grid displays the new value
+        var updatedRows = res.rows
+        updatedRows[row][col] = newValue
+        let updatedRes = QueryResult(
+            columns: res.columns,
+            rows: updatedRows,
+            affectedRows: res.affectedRows,
+            executionTime: res.executionTime,
+            error: res.error,
+            queryType: res.queryType
+        )
+        self.result = updatedRes
+        if let activeId = tabState.activeTabId {
+            tabState.setResult(for: activeId, result: updatedRes)
+        }
+        
         if insertedRowIndices.contains(row) {
             // Updating a cell in an inserted row: update the staged insert's values
             if let existingIdx = stagedChanges.changes.firstIndex(where: { $0.rowIndex == row && $0.changeType == .insert }) {
@@ -474,7 +543,8 @@ struct TableDataView: View {
                     oldValue: .null,
                     newValue: .null,
                     changeType: .insert,
-                    primaryKeyValues: updatedPKs
+                    primaryKeyValues: updatedPKs,
+                    columnOrder: res.columns.map(\.name)
                 )
                 stagedChanges.changes[existingIdx] = updatedChange
             }
@@ -486,7 +556,7 @@ struct TableDataView: View {
                     // Staged value is unchanged; preserve staged change!
                     return
                 }
-                if newValue == existing.oldValue {
+                if newValue == existing.oldValue || newValue.description == existing.oldValue.description {
                     // Reverted back to original database value: remove staged change
                     stagedChanges.changes.remove(at: existingIdx)
                     if let activeId = tabState.activeTabId,
@@ -500,7 +570,7 @@ struct TableDataView: View {
                 updatedChange.newValue = newValue
                 stagedChanges.changes[existingIdx] = updatedChange
             } else {
-                if oldValue == newValue { return }
+                if oldValue == newValue || oldValue.description == newValue.description { return }
                 
                 // Build primary key map for WHERE clause
                 var pkValues: [String: QueryResult.CellValue] = [:]
@@ -527,7 +597,8 @@ struct TableDataView: View {
                     oldValue: oldValue,
                     newValue: newValue,
                     changeType: .update,
-                    primaryKeyValues: pkValues
+                    primaryKeyValues: pkValues,
+                    columnOrder: res.columns.map(\.name)
                 )
                 
                 stagedChanges.add(change)
@@ -542,28 +613,38 @@ struct TableDataView: View {
     }
     
     private func commitStagedChanges() {
-        guard !stagedChanges.isEmpty else { return }
-        let changesToApply = stagedChanges.changes
+        // End any active editing in NSTableView so the latest text is committed to stagedChanges
+        (NSApp.keyWindow ?? NSApp.mainWindow)?.endEditing(for: nil)
+        (NSApp.keyWindow ?? NSApp.mainWindow)?.makeFirstResponder(nil)
         
-        isLoading = true
-        Task {
-            do {
-                try await appState.dbManager.applyChanges(changesToApply)
-                await MainActor.run {
-                    stagedChanges.clear()
-                    insertedRowIndices.removeAll()
-                    if let activeId = tabState.activeTabId,
-                       let idx = tabState.tabs.firstIndex(where: { $0.id == activeId }) {
-                        tabState.tabs[idx].stagedChanges = stagedChanges
-                    }
-                    loadData()
-                }
-            } catch {
-                await MainActor.run {
-                    self.errorMessage = "Failed to commit changes: \(ErrorFormatter.format(error))"
-                    self.isLoading = false
-                }
+        DispatchQueue.main.async {
+            guard !self.stagedChanges.isEmpty else { return }
+            let statements = self.stagedChanges.toSQL()
+            self.pendingCommitSQL = statements.joined(separator: "\n\n")
+            self.isShowingCommitReviewSheet = true
+        }
+    }
+    
+    private func applyFinalCommitSQL(_ finalSQL: String) async throws {
+        let statements = SQLStatementExtractor.splitStatements(from: finalSQL)
+        let targetDB = database.trimmingCharacters(in: .whitespacesAndNewlines)
+        for stmt in statements {
+            let clean = SQLStatementExtractor.cleanSQLStatement(stmt)
+            if clean.isEmpty { continue }
+            _ = try await appState.dbManager.executeQuery(clean, database: targetDB.isEmpty ? nil : targetDB)
+        }
+        
+        await MainActor.run {
+            self.stagedChanges.clear()
+            self.insertedRowIndices.removeAll()
+            self.commitErrorMessage = nil
+            self.pendingCommitSQL = ""
+            self.isShowingCommitReviewSheet = false
+            if let activeId = tabState.activeTabId,
+               let idx = tabState.tabs.firstIndex(where: { $0.id == activeId }) {
+                tabState.tabs[idx].stagedChanges = self.stagedChanges
             }
+            self.loadData()
         }
     }
     

@@ -40,7 +40,7 @@ struct ResultsPanelView: View {
                     .buttonStyle(.plain)
                 }
             } else if let result = result {
-                if result.isError {
+                if result.isError && !result.hasRows {
                     VStack(spacing: 12) {
                         Image(systemName: "exclamationmark.triangle.fill")
                             .foregroundColor(AppTheme.error)
@@ -73,16 +73,36 @@ struct ResultsPanelView: View {
                     }
                     .padding(24)
                 } else if result.hasRows {
-                    DataGridView(
-                        columns: result.columns,
-                        rows: result.rows,
-                        isEditable: isEditable,
-                        stagedChanges: stagedChanges,
-                        insertedRowIndices: insertedRowIndices,
-                        onCellEdit: onCellEdit,
-                        onRowSelect: onRowSelect,
-                        tableName: tableName
-                    )
+                    VStack(spacing: 0) {
+                        if let error = result.error {
+                            HStack(spacing: 8) {
+                                Image(systemName: "exclamationmark.triangle.fill")
+                                    .font(.system(size: 13))
+                                    .foregroundColor(AppTheme.error)
+                                Text(error)
+                                    .font(.system(size: 12, weight: .medium))
+                                    .foregroundColor(AppTheme.textPrimary)
+                                    .lineLimit(2)
+                                Spacer()
+                            }
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 8)
+                            .background(AppTheme.error.opacity(0.15))
+                            .overlay(Rectangle().frame(height: 1).foregroundColor(AppTheme.error.opacity(0.3)), alignment: .bottom)
+                        }
+                        
+                        DataGridView(
+                            columns: result.columns,
+                            rows: result.rows,
+                            isEditable: isEditable,
+                            stagedChanges: stagedChanges,
+                            insertedRowIndices: insertedRowIndices,
+                            onCellEdit: onCellEdit,
+                            onRowSelect: onRowSelect,
+                            tableName: tableName,
+                            resultId: result.id
+                        )
+                    }
                 } else if result.queryType == .select {
                     VStack(spacing: 12) {
                         Image(systemName: "tray")

@@ -10,6 +10,7 @@ struct DataGridView: NSViewRepresentable {
     var onCellEdit: ((Int, Int, QueryResult.CellValue) -> Void)? = nil
     var onRowSelect: ((Int?) -> Void)? = nil
     var tableName: String? = nil
+    var resultId: UUID? = nil
     
     func makeCoordinator() -> Coordinator {
         Coordinator(self)
@@ -62,6 +63,12 @@ struct DataGridView: NSViewRepresentable {
         
         tableView.menu = menu
         
+        context.coordinator.lastResultId = resultId
+        context.coordinator.lastColumns = columns
+        context.coordinator.lastRowCount = rows.count
+        context.coordinator.lastStagedCount = stagedChanges.count
+        context.coordinator.lastInsertedCount = insertedRowIndices.count
+        
         updateColumns(tableView, coordinator: context.coordinator)
         
         return scrollView
@@ -70,11 +77,26 @@ struct DataGridView: NSViewRepresentable {
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
         guard let tableView = scrollView.documentView as? NSTableView else { return }
         
-        context.coordinator.parent = self
-        context.coordinator.sortedRows = rows
+        let coordinator = context.coordinator
+        coordinator.parent = self
         
-        updateColumns(tableView, coordinator: context.coordinator)
-        tableView.reloadData()
+        let isNewResult = resultId != nil && coordinator.lastResultId != resultId
+        let columnsChanged = coordinator.lastColumns != columns
+        let rowsCountChanged = coordinator.lastRowCount != rows.count
+        let stagedChanged = coordinator.lastStagedCount != stagedChanges.count
+        let insertedChanged = coordinator.lastInsertedCount != insertedRowIndices.count
+        
+        if isNewResult || columnsChanged || rowsCountChanged || stagedChanged || insertedChanged {
+            coordinator.lastResultId = resultId
+            coordinator.lastColumns = columns
+            coordinator.lastRowCount = rows.count
+            coordinator.lastStagedCount = stagedChanges.count
+            coordinator.lastInsertedCount = insertedRowIndices.count
+            coordinator.sortedRows = rows
+            
+            updateColumns(tableView, coordinator: coordinator)
+            tableView.reloadData()
+        }
     }
     
     private func updateColumns(_ tableView: NSTableView, coordinator: Coordinator) {
@@ -121,6 +143,11 @@ struct DataGridView: NSViewRepresentable {
         var parent: DataGridView
         var sortedRows: [[QueryResult.CellValue]] = []
         weak var tableView: NSTableView?
+        var lastResultId: UUID? = nil
+        var lastColumns: [QueryResult.ColumnHeader] = []
+        var lastRowCount: Int = -1
+        var lastStagedCount: Int = -1
+        var lastInsertedCount: Int = -1
         
         init(_ parent: DataGridView) {
             self.parent = parent
@@ -238,22 +265,83 @@ struct DataGridView: NSViewRepresentable {
             let colIndex = textField.tag & 0xFFFF
             let newValueStr = textField.stringValue
             
-            // If the user selected the cell and moved out without changing anything, do not fire edit!
-            if let initial = editingInitialString, initial == newValueStr, row == editingRow, colIndex == editingCol {
-                editingInitialString = nil
+            let existingValue: QueryResult.CellValue?
+            if row < sortedRows.count && colIndex < sortedRows[row].count {
+                existingValue = sortedRows[row][colIndex]
+            } else {
+                existingValue = nil
+            }
+            
+            // Clean up editing tracking
+            let initial = editingInitialString
+            let prevRow = editingRow
+            let prevCol = editingCol
+            editingInitialString = nil
+            editingRow = -1
+            editingCol = -1
+            
+            // 1. If editing was explicitly tracked and text didn't change: no-op
+            if let initial = initial, initial == newValueStr, row == prevRow, colIndex == prevCol {
                 return
             }
-            editingInitialString = nil
             
+            // 2. Direct comparison with existing cell value:
+            // Prevents spurious edits when user double-clicks without typing
+            if let existing = existingValue {
+                // If cell was NULL and remains "NULL" or empty: no-op
+                if existing.isNull && (newValueStr.uppercased() == "NULL" || newValueStr.isEmpty) {
+                    return
+                }
+                // If cell was DEFAULT and remains "DEFAULT": no-op
+                if existing.description.uppercased() == "DEFAULT" && newValueStr.uppercased() == "DEFAULT" {
+                    return
+                }
+                // If textual value is identical to existing: no-op
+                if !existing.isNull && existing.description == newValueStr {
+                    return
+                }
+            }
+            
+            // Determine the new CellValue, respecting the existing type if possible
             let newCellValue: QueryResult.CellValue
             if newValueStr.uppercased() == "NULL" {
                 newCellValue = .null
+            } else if let existing = existingValue {
+                switch existing {
+                case .int:
+                    if let intVal = Int64(newValueStr) {
+                        newCellValue = .int(intVal)
+                    } else {
+                        newCellValue = .string(newValueStr)
+                    }
+                case .double:
+                    if let dblVal = Double(newValueStr) {
+                        newCellValue = .double(dblVal)
+                    } else {
+                        newCellValue = .string(newValueStr)
+                    }
+                case .string:
+                    newCellValue = .string(newValueStr)
+                default:
+                    if let intVal = Int64(newValueStr) {
+                        newCellValue = .int(intVal)
+                    } else if let dblVal = Double(newValueStr), newValueStr.contains(".") {
+                        newCellValue = .double(dblVal)
+                    } else {
+                        newCellValue = .string(newValueStr)
+                    }
+                }
             } else if let intVal = Int64(newValueStr) {
                 newCellValue = .int(intVal)
             } else if let dblVal = Double(newValueStr), newValueStr.contains(".") {
                 newCellValue = .double(dblVal)
             } else {
                 newCellValue = .string(newValueStr)
+            }
+            
+            // Final equality check against existing cell value
+            if let existing = existingValue, newCellValue == existing {
+                return
             }
             
             if row < sortedRows.count && colIndex < sortedRows[row].count {

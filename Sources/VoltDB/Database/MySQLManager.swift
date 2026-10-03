@@ -1064,7 +1064,8 @@ actor MySQLManager {
             throw NSError(domain: "MySQLManager", code: 1, userInfo: [NSLocalizedDescriptionKey: "Not connected to database."])
         }
         for change in changes {
-            _ = try await executeQuery(change.toSQL())
+            let db = change.database.trimmingCharacters(in: .whitespacesAndNewlines)
+            _ = try await executeQuery(change.toSQL(), database: db.isEmpty ? nil : db)
         }
     }
 }

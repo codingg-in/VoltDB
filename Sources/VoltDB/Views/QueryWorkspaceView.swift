@@ -12,8 +12,11 @@ struct QueryWorkspaceView: View {
     @State private var pendingDestructiveSQL: String = ""
     @State private var insertedRowIndices: Set<Int> = []
     @State private var primaryKeyColumns: [String] = []
-    @State private var editorHeight: CGFloat = 220
+    @State private var editorHeight: CGFloat? = nil
+    @State private var dragStartHeight: CGFloat? = nil
     @State private var isDraggingSplitter: Bool = false
+    @State private var isShowingCommitReviewSheet: Bool = false
+    @State private var pendingCommitSQL: String = ""
     
     init(tab: EditorTab) {
         self.tab = tab
@@ -51,6 +54,8 @@ struct QueryWorkspaceView: View {
             
             // Split Editor + Results (Robust against sidebar resize)
             GeometryReader { geo in
+                let currentEditorHeight = editorHeight ?? max(120, geo.size.height - 300)
+                
                 VStack(spacing: 0) {
                     SQLEditorView(
                         text: Binding(
@@ -67,35 +72,43 @@ struct QueryWorkspaceView: View {
                         columnsByTable: schemaState.columnsByTable,
                         databaseNames: dbs
                     )
-                    .frame(height: max(70, min(editorHeight, geo.size.height - 80)))
+                    .frame(height: max(80, min(currentEditorHeight, geo.size.height - 100)))
                     
                     // Draggable Divider
-                    Rectangle()
-                        .fill(AppTheme.border.opacity(0.35))
-                        .frame(height: 1)
-                        .overlay(
-                            Rectangle()
-                                .fill(isDraggingSplitter ? AppTheme.accent : Color.clear)
-                                .frame(height: 3)
-                        )
-                        .contentShape(Rectangle().inset(by: -3))
-                        .gesture(
-                            DragGesture()
-                                .onChanged { value in
+                    ZStack {
+                        Color.clear
+                            .frame(height: 8)
+                        
+                        Rectangle()
+                            .fill(isDraggingSplitter ? AppTheme.accent : AppTheme.border.opacity(0.35))
+                            .frame(height: isDraggingSplitter ? 2 : 1)
+                    }
+                    .frame(height: 8)
+                    .contentShape(Rectangle())
+                    .gesture(
+                        DragGesture(minimumDistance: 1, coordinateSpace: .global)
+                            .onChanged { value in
+                                if !isDraggingSplitter {
                                     isDraggingSplitter = true
-                                    editorHeight = max(70, min(editorHeight + value.translation.height, geo.size.height - 80))
+                                    dragStartHeight = currentEditorHeight
+                                    NSCursor.resizeUpDown.push()
                                 }
-                                .onEnded { _ in
-                                    isDraggingSplitter = false
-                                }
-                        )
-                        .onHover { hovering in
-                            if hovering {
-                                NSCursor.resizeUpDown.push()
-                            } else {
+                                let base = dragStartHeight ?? currentEditorHeight
+                                editorHeight = max(80, min(base + value.translation.height, geo.size.height - 100))
+                            }
+                            .onEnded { _ in
+                                isDraggingSplitter = false
+                                dragStartHeight = nil
                                 NSCursor.pop()
                             }
+                    )
+                    .onHover { hovering in
+                        if hovering && !isDraggingSplitter {
+                            NSCursor.resizeUpDown.push()
+                        } else if !hovering && !isDraggingSplitter {
+                            NSCursor.pop()
                         }
+                    }
                     
                     ResultsPanelView(
                         result: tabState.activeTab?.result ?? tab.result,
@@ -123,7 +136,6 @@ struct QueryWorkspaceView: View {
             if !initDB.isEmpty {
                 Task {
                     await schemaState.loadTables(for: initDB)
-                    await schemaState.loadAllColumns(for: initDB)
                 }
             }
         }
@@ -177,6 +189,23 @@ struct QueryWorkspaceView: View {
             }
         } message: {
             Text("This query contains a potentially destructive statement (DROP, TRUNCATE, DELETE or UPDATE without WHERE). You are connected to a PRODUCTION database.\n\nAre you sure you want to execute this?")
+        }
+        .sheet(isPresented: $isShowingCommitReviewSheet) {
+            let activeChanges = tabState.activeTab?.stagedChanges
+            CommitReviewSheetView(
+                initialSQL: pendingCommitSQL.isEmpty ? (activeChanges?.toSQL().joined(separator: "\n\n") ?? "") : pendingCommitSQL,
+                database: currentDB,
+                tableName: tabState.activeTab?.tableName,
+                changeCount: activeChanges?.count ?? 0,
+                onApply: { finalSQL in
+                    try await applyFinalCommitSQL(finalSQL)
+                },
+                onCancel: {
+                    isShowingCommitReviewSheet = false
+                    pendingCommitSQL = ""
+                }
+            )
+            .id(pendingCommitSQL + "_\(activeChanges?.count ?? 0)")
         }
     }
     
@@ -373,7 +402,8 @@ struct QueryWorkspaceView: View {
         var newRowValues: [QueryResult.CellValue] = []
         for col in res.columns {
             let colName = col.name.lowercased()
-            if colName == "id" || colName.hasSuffix("_id") || primaryKeyColumns.contains(where: { $0.lowercased() == colName }) {
+            let isPK = primaryKeyColumns.contains(where: { $0.lowercased() == colName })
+            if colName == "id" || (isPK && (colName.hasSuffix("_id") || primaryKeyColumns.count == 1)) {
                 newRowValues.append(.string("DEFAULT"))
             } else if colName.hasSuffix("_at") || colName.hasSuffix("_on") || colName.contains("time") {
                 newRowValues.append(.string("DEFAULT"))
@@ -410,7 +440,8 @@ struct QueryWorkspaceView: View {
             oldValue: .null,
             newValue: .null,
             changeType: .insert,
-            primaryKeyValues: rowValuesDict
+            primaryKeyValues: rowValuesDict,
+            columnOrder: res.columns.map(\.name)
         )
         
         if let activeId = tabState.activeTabId,
@@ -457,7 +488,8 @@ struct QueryWorkspaceView: View {
                     oldValue: .null,
                     newValue: .null,
                     changeType: .insert,
-                    primaryKeyValues: updatedPKs
+                    primaryKeyValues: updatedPKs,
+                    columnOrder: res.columns.map(\.name)
                 )
                 currentStaged.changes[existingIdx] = updatedChange
             }
@@ -469,7 +501,7 @@ struct QueryWorkspaceView: View {
                     // Staged value is unchanged; preserve staged change!
                     return
                 }
-                if newValue == existing.oldValue {
+                if newValue == existing.oldValue || newValue.description == existing.oldValue.description {
                     // Reverted back to original database value: remove staged change
                     currentStaged.changes.remove(at: existingIdx)
                     tabState.tabs[tabIdx].stagedChanges = currentStaged
@@ -480,7 +512,7 @@ struct QueryWorkspaceView: View {
                 updatedChange.newValue = newValue
                 currentStaged.changes[existingIdx] = updatedChange
             } else {
-                if oldValue == newValue { return }
+                if oldValue == newValue || oldValue.description == newValue.description { return }
                 
                 var pkValues: [String: QueryResult.CellValue] = [:]
                 for pk in primaryKeyColumns {
@@ -504,7 +536,8 @@ struct QueryWorkspaceView: View {
                     oldValue: oldValue,
                     newValue: newValue,
                     changeType: .update,
-                    primaryKeyValues: pkValues
+                    primaryKeyValues: pkValues,
+                    columnOrder: res.columns.map(\.name)
                 )
                 currentStaged.add(change)
             }
@@ -514,36 +547,35 @@ struct QueryWorkspaceView: View {
     }
     
     private func commitStagedChanges() {
-        guard let activeTab = tabState.activeTab, activeTab.stagedChanges.count > 0 else { return }
-        let changesToApply = activeTab.stagedChanges.changes
+        // End any active editing in NSTableView so the latest text is committed to stagedChanges
+        (NSApp.keyWindow ?? NSApp.mainWindow)?.endEditing(for: nil)
+        (NSApp.keyWindow ?? NSApp.mainWindow)?.makeFirstResponder(nil)
         
-        tabState.setLoading(for: activeTab.id, loading: true)
-        Task {
-            do {
-                try await appState.dbManager.applyChanges(changesToApply)
-                await MainActor.run {
-                    if let activeId = tabState.activeTabId,
-                       let idx = tabState.tabs.firstIndex(where: { $0.id == activeId }) {
-                        tabState.tabs[idx].stagedChanges.clear()
-                    }
-                    self.insertedRowIndices.removeAll()
-                    tabState.setLoading(for: activeTab.id, loading: false)
-                    self.runCurrentQuery()
-                }
-            } catch {
-                await MainActor.run {
-                    tabState.setLoading(for: activeTab.id, loading: false)
-                    let errorResult = QueryResult(
-                        columns: [],
-                        rows: [],
-                        affectedRows: 0,
-                        executionTime: 0,
-                        error: "Failed to commit changes: \(ErrorFormatter.format(error))",
-                        queryType: .other
-                    )
-                    tabState.setResult(for: activeTab.id, result: errorResult)
-                }
+        DispatchQueue.main.async {
+            guard let activeTab = self.tabState.activeTab, activeTab.stagedChanges.count > 0 else { return }
+            let statements = activeTab.stagedChanges.toSQL()
+            self.pendingCommitSQL = statements.joined(separator: "\n\n")
+            self.isShowingCommitReviewSheet = true
+        }
+    }
+    
+    private func applyFinalCommitSQL(_ finalSQL: String) async throws {
+        let statements = SQLStatementExtractor.splitStatements(from: finalSQL)
+        let targetDB = currentDB.trimmingCharacters(in: .whitespacesAndNewlines)
+        for stmt in statements {
+            let clean = SQLStatementExtractor.cleanSQLStatement(stmt)
+            if clean.isEmpty { continue }
+            _ = try await appState.dbManager.executeQuery(clean, database: targetDB.isEmpty ? nil : targetDB)
+        }
+        
+        await MainActor.run {
+            if let activeId = tabState.activeTabId,
+               let idx = tabState.tabs.firstIndex(where: { $0.id == activeId }) {
+                tabState.tabs[idx].stagedChanges.clear()
             }
+            self.insertedRowIndices.removeAll()
+            self.isShowingCommitReviewSheet = false
+            self.runCurrentQuery()
         }
     }
     

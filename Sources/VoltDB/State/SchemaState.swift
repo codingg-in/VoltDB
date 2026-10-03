@@ -1,6 +1,7 @@
 import Foundation
 import Observation
 
+@MainActor
 @Observable
 class SchemaState {
     var databases: [DatabaseInfo] = []
@@ -28,43 +29,36 @@ class SchemaState {
         isFetchingDatabases = true
         defer { isFetchingDatabases = false }
         
-        await MainActor.run {
-            self.isLoading = true
-            if !defaultDB.isEmpty {
-                self.defaultDatabase = defaultDB
-            }
+        self.isLoading = true
+        if !defaultDB.isEmpty {
+            self.defaultDatabase = defaultDB
         }
         
         do {
             let dbs = try await dbManager.getDatabases()
-            await MainActor.run {
-                self.databases = dbs
-                self.isLoading = false
-                
-                // Auto-expand default database if specified
-                let target = self.defaultDatabase.isEmpty ? defaultDB : self.defaultDatabase
-                if !target.isEmpty {
-                    self.expandedNodes.insert(target)
-                }
+            self.databases = dbs
+            self.isLoading = false
+            
+            // Auto-expand default database if specified
+            let target = self.defaultDatabase.isEmpty ? defaultDB : self.defaultDatabase
+            if !target.isEmpty {
+                self.expandedNodes.insert(target)
             }
             
             // Pre-fetch tables & columns for default database
-            let target = self.defaultDatabase.isEmpty ? defaultDB : self.defaultDatabase
             if !target.isEmpty {
                 await loadTables(for: target)
             }
         } catch {
             print("Failed to load databases: \(error)")
-            await MainActor.run { self.isLoading = false }
+            self.isLoading = false
         }
     }
     
     func loadTables(for database: String) async {
         do {
             let tables = try await dbManager.getTables(database: database)
-            await MainActor.run {
-                self.tablesByDatabase[database] = tables
-            }
+            self.tablesByDatabase[database] = tables
             // Load column metadata in background for instant autocomplete
             await loadAllColumns(for: database)
         } catch {
@@ -105,15 +99,10 @@ class SchemaState {
                 }
             }
             
-            let capturedTableCols = tableCols
-            let capturedAllCols = allCols
-            
-            await MainActor.run {
-                for (tbl, cols) in capturedTableCols {
-                    self.columnsByTable[tbl] = cols
-                }
-                self.allColumnsByDatabase[database] = capturedAllCols
+            for (tbl, cols) in tableCols {
+                self.columnsByTable[tbl] = cols
             }
+            self.allColumnsByDatabase[database] = allCols
         } catch {
             print("Failed to load columns for \(database): \(error)")
         }

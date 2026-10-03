@@ -1,6 +1,7 @@
 import SwiftUI
 import AppKit
 
+@MainActor
 struct DetailsPanelView: View {
     @Environment(AppState.self) private var appState
     @Environment(TabState.self) private var tabState
