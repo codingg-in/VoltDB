@@ -29,6 +29,7 @@ struct QueryWorkspaceView: View {
     var body: some View {
         let activeDB = currentDB
         let tables = schemaState.tablesByDatabase[activeDB]?.map { $0.name } ?? []
+        let cols = schemaState.allColumnsByDatabase[activeDB] ?? []
         let dbs = schemaState.databases.map { $0.name }
         
         VStack(spacing: 0) {
@@ -62,7 +63,7 @@ struct QueryWorkspaceView: View {
                             }
                         ),
                         tableNames: tables,
-                        columnNames: schemaState.allColumnsByDatabase[activeDB] ?? [],
+                        columnNames: cols,
                         columnsByTable: schemaState.columnsByTable,
                         databaseNames: dbs
                     )
