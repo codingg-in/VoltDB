@@ -41,7 +41,7 @@ struct SuggestionItem: Identifiable, Equatable {
     let kind: SuggestionKind
 }
 
-// MARK: - Non-Activating Floating Panel (TablePro-style)
+// MARK: - Non-Activating Floating Panel
 
 internal final class SuggestionPanel: NSPanel {
     init() {

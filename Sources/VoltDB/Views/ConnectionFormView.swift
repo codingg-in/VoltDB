@@ -22,7 +22,8 @@ struct ConnectionFormView: View {
     @State private var isConnecting = false
     @State private var showPassword = false
     @State private var showDeleteConfirmation = false
-    
+    @State private var isRecentlySaved = false
+        
     var body: some View {
         VStack(spacing: 0) {
             ScrollView {
@@ -32,10 +33,6 @@ struct ConnectionFormView: View {
                     generalSection
                     serverSection
                     sshTunnelSection
-                    
-                    if let result = testResult {
-                        feedbackBanner(result)
-                    }
                 }
                 .padding(20)
             }
@@ -48,6 +45,11 @@ struct ConnectionFormView: View {
                 .background(AppTheme.backgroundSecondary)
         }
         .background(AppTheme.backgroundPrimary)
+        .overlay {
+            if let result = testResult {
+                testResultPopupModal(result)
+            }
+        }
         .alert("Delete Connection", isPresented: $showDeleteConfirmation) {
             Button("Cancel", role: .cancel) { }
             Button("Delete", role: .destructive) {
@@ -55,6 +57,9 @@ struct ConnectionFormView: View {
             }
         } message: {
             Text("Are you sure you want to delete '\(config.name)'?")
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .saveConnection)) { _ in
+            saveConnection()
         }
     }
     
@@ -71,13 +76,9 @@ struct ConnectionFormView: View {
                     .foregroundColor(AppTheme.textSecondary)
             }
             Spacer()
-            if config.isProduction {
-                Text("PRODUCTION")
-                    .font(.caption2.bold())
-                    .foregroundColor(.white)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .background(Color.red.cornerRadius(4))
+            
+            if let grp = config.displayGroup {
+                ConnectionGroupBadge(group: grp, size: .regular)
             }
         }
     }
@@ -97,46 +98,47 @@ struct ConnectionFormView: View {
                     .overlay(RoundedRectangle(cornerRadius: 6).stroke(AppTheme.border, lineWidth: 1))
             }
             
-            VStack(alignment: .leading, spacing: 6) {
-                Text("Color Tag")
-                    .font(.caption)
-                    .foregroundColor(AppTheme.textSecondary)
-                HStack(spacing: 10) {
-                    ForEach(ConnectionConfig.presetColors, id: \.hex) { preset in
-                        Button {
-                            config.colorHex = preset.hex
-                        } label: {
-                            ZStack {
-                                Circle()
-                                    .fill(Color(hex: preset.hex))
-                                    .frame(width: 22, height: 22)
-                                if config.colorHex == preset.hex {
-                                    Circle()
-                                        .stroke(Color.white, lineWidth: 2)
-                                        .frame(width: 26, height: 26)
-                                    Image(systemName: "checkmark")
-                                        .font(.system(size: 10, weight: .bold))
-                                        .foregroundColor(.white)
+            // Group Selection Dropdown
+            formField(label: "Group") {
+                Menu {
+                    Button("None (Ungrouped)") {
+                        config.setGroup(nil)
+                    }
+                    if !availableGroups.isEmpty {
+                        Divider()
+                        ForEach(availableGroups, id: \.self) { grp in
+                            Button {
+                                config.setGroup(grp)
+                            } label: {
+                                HStack {
+                                    Text(grp)
+                                    if config.displayGroup?.caseInsensitiveCompare(grp) == .orderedSame {
+                                        Image(systemName: "checkmark")
+                                    }
                                 }
                             }
                         }
-                        .buttonStyle(.plain)
                     }
+                } label: {
+                    HStack {
+                        Image(systemName: "folder")
+                            .font(.system(size: 11))
+                            .foregroundColor(AppTheme.textMuted)
+                        Text(config.displayGroup ?? "None (Ungrouped)")
+                            .font(.system(size: 12))
+                            .foregroundColor(AppTheme.textPrimary)
+                        Spacer()
+                        Image(systemName: "chevron.up.chevron.down")
+                            .font(.system(size: 9))
+                            .foregroundColor(AppTheme.textMuted)
+                    }
+                    .padding(8)
+                    .background(AppTheme.backgroundTertiary)
+                    .cornerRadius(6)
+                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(AppTheme.border, lineWidth: 1))
                 }
+                .menuStyle(.borderlessButton)
             }
-            
-            Toggle(isOn: $config.isProduction) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Production Environment")
-                        .font(.body)
-                        .foregroundColor(AppTheme.textPrimary)
-                    Text("Displays safety warnings and red alert banners")
-                        .font(.caption)
-                        .foregroundColor(AppTheme.textSecondary)
-                }
-            }
-            .toggleStyle(.switch)
-            .tint(.red)
         }
         .padding(16)
         .background(AppTheme.backgroundSecondary)
@@ -394,62 +396,103 @@ struct ConnectionFormView: View {
     }
     
     @ViewBuilder
-    private func feedbackBanner(_ result: ConnectionTestResult) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            switch result {
-            case .success(let msg):
-                HStack(alignment: .top, spacing: 10) {
-                    Image(systemName: "checkmark.circle.fill")
-                        .foregroundColor(AppTheme.success)
-                        .font(.title3)
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("Connection Succeeded")
-                            .font(.subheadline.bold())
-                            .foregroundColor(AppTheme.success)
-                        Text(msg)
-                            .font(.caption)
-                            .foregroundColor(AppTheme.textPrimary)
-                    }
-                    Spacer()
+    private func testResultPopupModal(_ result: ConnectionTestResult) -> some View {
+        ZStack {
+            Color.black.opacity(0.45)
+                .ignoresSafeArea()
+                .onTapGesture {
+                    testResult = nil
                 }
-            case .failure(let msg):
-                HStack(alignment: .top, spacing: 10) {
-                    Image(systemName: "exclamationmark.triangle.fill")
-                        .foregroundColor(AppTheme.error)
-                        .font(.title3)
-                    VStack(alignment: .leading, spacing: 6) {
-                        HStack {
-                            Text("Connection Failed")
-                                .font(.subheadline.bold())
-                                .foregroundColor(AppTheme.error)
-                            Spacer()
-                            Button {
-                                NSPasteboard.general.clearContents()
-                                NSPasteboard.general.setString(msg, forType: .string)
-                            } label: {
-                                Label("Copy Error", systemImage: "doc.on.doc")
-                                    .font(.caption2)
-                            }
-                            .buttonStyle(.plain)
-                            .foregroundColor(AppTheme.textSecondary)
-                        }
-                        
-                        Text(msg)
-                            .font(.caption)
-                            .foregroundColor(AppTheme.textPrimary)
-                            .textSelection(.enabled)
-                            .fixedSize(horizontal: false, vertical: true)
+            
+            VStack(spacing: 16) {
+                HStack(alignment: .top, spacing: 14) {
+                    switch result {
+                    case .success:
+                        Image(systemName: "checkmark.circle.fill")
+                            .font(.system(size: 30))
+                            .foregroundColor(AppTheme.success)
+                    case .failure:
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .font(.system(size: 30))
+                            .foregroundColor(AppTheme.error)
                     }
+                    
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(resultIsSuccess(result) ? "Connection Succeeded" : "Connection Failed")
+                            .font(.headline.bold())
+                            .foregroundColor(AppTheme.textPrimary)
+                        
+                        switch result {
+                        case .success(let msg):
+                            Text(msg)
+                                .font(.subheadline)
+                                .foregroundColor(AppTheme.textSecondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        case .failure(let msg):
+                            ScrollView {
+                                Text(msg)
+                                    .font(.system(size: 11, design: .monospaced))
+                                    .foregroundColor(AppTheme.textPrimary)
+                                    .textSelection(.enabled)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .padding(10)
+                            }
+                            .frame(maxHeight: 180)
+                            .background(AppTheme.backgroundPrimary)
+                            .cornerRadius(6)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 6)
+                                    .stroke(AppTheme.border.opacity(0.6), lineWidth: 1)
+                            )
+                        }
+                    }
+                    
+                    Spacer(minLength: 0)
+                }
+                
+                HStack {
+                    if case .failure(let msg) = result {
+                        Button {
+                            NSPasteboard.general.clearContents()
+                            NSPasteboard.general.setString(msg, forType: .string)
+                        } label: {
+                            HStack(spacing: 5) {
+                                Image(systemName: "doc.on.doc")
+                                Text("Copy Error")
+                            }
+                            .font(.caption)
+                            .foregroundColor(AppTheme.textSecondary)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 5)
+                            .background(AppTheme.backgroundTertiary)
+                            .cornerRadius(6)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    
+                    Spacer()
+                    
+                    Button("OK") {
+                        testResult = nil
+                    }
+                    .keyboardShortcut(.defaultAction)
+                    .keyboardShortcut(.cancelAction)
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.regular)
                 }
             }
+            .padding(20)
+            .frame(width: 440)
+            .background(AppTheme.backgroundSecondary)
+            .cornerRadius(12)
+            .overlay(
+                RoundedRectangle(cornerRadius: 12)
+                    .stroke(AppTheme.border, lineWidth: 1)
+            )
+            .shadow(color: Color.black.opacity(0.4), radius: 24, x: 0, y: 10)
         }
-        .padding(14)
-        .background(AppTheme.backgroundTertiary)
-        .cornerRadius(8)
-        .overlay(
-            RoundedRectangle(cornerRadius: 8)
-                .stroke(resultIsSuccess(result) ? AppTheme.success.opacity(0.4) : AppTheme.error.opacity(0.4), lineWidth: 1)
-        )
+        .transition(.opacity.combined(with: .scale(scale: 0.96)))
+        .animation(.easeInOut(duration: 0.15), value: testResult != nil)
     }
     
     private func resultIsSuccess(_ result: ConnectionTestResult) -> Bool {
@@ -527,16 +570,31 @@ struct ConnectionFormView: View {
                 .padding(.horizontal, 6)
             }
             
-            Button("Save") {
+            Button {
                 saveConnection()
+            } label: {
+                HStack(spacing: 4) {
+                    if isRecentlySaved {
+                        Image(systemName: "checkmark")
+                            .font(.system(size: 10, weight: .bold))
+                            .foregroundColor(AppTheme.success)
+                        Text("Saved")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundColor(AppTheme.success)
+                    } else {
+                        Text("Save")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundColor(AppTheme.textPrimary)
+                    }
+                }
+                .padding(.horizontal, 12)
+                .frame(height: 28)
+                .background(AppTheme.backgroundTertiary)
+                .cornerRadius(5)
+                .overlay(RoundedRectangle(cornerRadius: 5).stroke(isRecentlySaved ? AppTheme.success.opacity(0.8) : AppTheme.border.opacity(0.6), lineWidth: 1))
             }
-            .font(.system(size: 11, weight: .medium))
             .buttonStyle(.plain)
-            .padding(.horizontal, 12)
-            .frame(height: 28)
-            .background(AppTheme.backgroundTertiary)
-            .cornerRadius(5)
-            .overlay(RoundedRectangle(cornerRadius: 5).stroke(AppTheme.border.opacity(0.6), lineWidth: 1))
+            .keyboardShortcut("s", modifiers: .command)
             
             if appState.connectionStatus == .connected {
                 Button {
@@ -641,9 +699,19 @@ struct ConnectionFormView: View {
     }
     
     private func saveConnection() {
+        // Resign active text field focus so uncommitted edits flush into config
+        NSApp.keyWindow?.makeFirstResponder(nil)
         ensureConnectionName()
         appState.saveConnection(config, password: password)
         onSave()
+        withAnimation(.easeInOut(duration: 0.15)) {
+            isRecentlySaved = true
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+            withAnimation(.easeInOut(duration: 0.2)) {
+                isRecentlySaved = false
+            }
+        }
     }
     
     private func connectNow() {
@@ -670,6 +738,25 @@ struct ConnectionFormView: View {
                     testResult = .failure(formatted)
                 }
             }
+        }
+    }
+    
+    private var availableGroups: [String] {
+        var set = Set<String>()
+        for g in appState.customGroups {
+            set.insert(g)
+        }
+        for conn in appState.savedConnections {
+            if let g = conn.displayGroup {
+                set.insert(g)
+            }
+        }
+        return set.sorted { a, b in
+            let prio = ["PRODUCTION": 1, "PROD": 1, "STAGING": 2, "DEVELOPMENT": 3, "DEV": 3, "TESTING": 4, "QA": 4, "LOCAL": 5]
+            let pA = prio[a.uppercased()] ?? 99
+            let pB = prio[b.uppercased()] ?? 99
+            if pA != pB { return pA < pB }
+            return a.localizedCaseInsensitiveCompare(b) == .orderedAscending
         }
     }
 }

@@ -159,6 +159,17 @@ struct WindowRootView: View {
                     }
                 }
             }
+            .onReceive(NotificationCenter.default.publisher(for: .groupColorsChanged)) { _ in
+                appState.loadGroupColors()
+                appState.loadCustomGroups()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .connectionsChanged)) { _ in
+                appState.loadConnections()
+                if let activeId = appState.activeConnection?.id,
+                   let updated = appState.savedConnections.first(where: { $0.id == activeId }) {
+                    appState.activeConnection = updated
+                }
+            }
             .onAppear {
                 (NSApp.delegate as? AppDelegate)?.openLauncherWindow = {
                     openWindow(id: "launcher")
@@ -176,6 +187,8 @@ struct WindowRootView: View {
         }
         
         appState.loadConnections()
+        appState.loadCustomGroups()
+        appState.loadGroupColors()
         guard let config = appState.savedConnections.first(where: { $0.id == targetId }) else { return }
         
         await appState.connect(config: config)
@@ -205,7 +218,7 @@ struct VoltDBApp: App {
         }
         .windowStyle(.hiddenTitleBar)
         .windowResizability(.contentSize)
-        .defaultSize(width: 820, height: 575)
+        .defaultSize(width: 840, height: 580)
         .commands {
             CommandGroup(replacing: .newItem) {
                 Button("Connection Manager...") {
@@ -343,4 +356,7 @@ extension Notification.Name {
     static let connectToWorkspace = Notification.Name("VoltDB.connectToWorkspace")
     static let stopQuery = Notification.Name("VoltDB.stopQuery")
     static let addNewRow = Notification.Name("VoltDB.addNewRow")
+    static let saveConnection = Notification.Name("VoltDB.saveConnection")
+    static let groupColorsChanged = Notification.Name("VoltDB.groupColorsChanged")
+    static let connectionsChanged = Notification.Name("VoltDB.connectionsChanged")
 }

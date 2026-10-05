@@ -11,6 +11,7 @@ enum ConnectionStatus: Equatable {
 @Observable
 class AppState {
     var savedConnections: [ConnectionConfig] = []
+    var customGroups: [String] = []
     var activeConnection: ConnectionConfig? = nil
     var connectionStatus: ConnectionStatus = .disconnected
     var isShowingConnectionManager = false
@@ -21,19 +22,99 @@ class AppState {
     let dbManager = MySQLManager()
     private var isConnecting = false
     
+    var groupColors: [String: String] = [:]
+    private var notificationObservers: [NSObjectProtocol] = []
+    
     init() {
         loadConnections()
+        loadCustomGroups()
+        loadGroupColors()
+        setupNotificationObservers()
     }
     
     deinit {
+        for obs in notificationObservers {
+            NotificationCenter.default.removeObserver(obs)
+        }
         let mgr = dbManager
         Task {
             await mgr.disconnect()
         }
     }
     
+    private func setupNotificationObservers() {
+        let obs1 = NotificationCenter.default.addObserver(
+            forName: .groupColorsChanged,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.loadGroupColors()
+            self?.loadCustomGroups()
+        }
+        let obs2 = NotificationCenter.default.addObserver(
+            forName: .connectionsChanged,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            guard let self = self else { return }
+            self.loadConnections()
+            if let activeId = self.activeConnection?.id,
+               let updated = self.savedConnections.first(where: { $0.id == activeId }) {
+                self.activeConnection = updated
+            }
+        }
+        notificationObservers = [obs1, obs2]
+    }
+    
     func loadConnections() {
         self.savedConnections = ConnectionStore.shared.loadConnections()
+    }
+    
+    func loadCustomGroups() {
+        self.customGroups = ConnectionStore.shared.loadCustomGroups()
+    }
+    
+    func loadGroupColors() {
+        self.groupColors = ConnectionStore.shared.loadGroupColors()
+    }
+    
+    func groupColorHex(for group: String) -> String {
+        let normalized = group.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if let customHex = groupColors[normalized] {
+            return customHex
+        }
+        return ConnectionStore.shared.groupColorHex(for: group)
+    }
+    
+    func setGroupColor(_ hex: String, for group: String) {
+        ConnectionStore.shared.saveGroupColor(hex, for: group)
+        loadGroupColors()
+    }
+    
+    func createGroup(_ name: String, colorHex: String? = nil) {
+        ConnectionStore.shared.addCustomGroup(name, colorHex: colorHex)
+        loadCustomGroups()
+        loadGroupColors()
+    }
+    
+    func renameGroup(from oldName: String, to newName: String) {
+        ConnectionStore.shared.renameCustomGroup(from: oldName, to: newName)
+        loadConnections()
+        loadCustomGroups()
+        loadGroupColors()
+    }
+    
+    func deleteGroup(_ name: String) {
+        ConnectionStore.shared.deleteCustomGroup(name)
+        // Also ungroup any connections that were in this group
+        for conn in savedConnections where conn.group?.caseInsensitiveCompare(name) == .orderedSame {
+            var updated = conn
+            updated.setGroup(nil)
+            ConnectionStore.shared.addOrUpdateConnection(updated)
+        }
+        loadConnections()
+        loadCustomGroups()
+        loadGroupColors()
     }
     
     func saveConnection(_ config: ConnectionConfig, password: String) {
@@ -45,6 +126,9 @@ class AppState {
             VaultStore.shared.deleteSSHPassphrase(for: config.id)
         }
         loadConnections()
+        if activeConnection?.id == config.id {
+            activeConnection = config
+        }
     }
     
     func deleteConnection(id: UUID) {

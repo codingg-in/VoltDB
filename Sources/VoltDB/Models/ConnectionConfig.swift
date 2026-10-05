@@ -18,6 +18,7 @@ struct ConnectionConfig: Codable, Identifiable, Hashable {
     var colorHex: String
     var useSSL: Bool
     var isProduction: Bool
+    var group: String?
     
     // SSH Tunnel Configuration
     var useSSHTunnel: Bool
@@ -45,6 +46,7 @@ struct ConnectionConfig: Codable, Identifiable, Hashable {
         colorHex: String = "#3b82f6",
         useSSL: Bool = false,
         isProduction: Bool = false,
+        group: String? = nil,
         useSSHTunnel: Bool = false,
         sshHost: String = "",
         sshPort: Int = 22,
@@ -63,7 +65,12 @@ struct ConnectionConfig: Codable, Identifiable, Hashable {
         self.database = database
         self.colorHex = colorHex
         self.useSSL = useSSL
-        self.isProduction = isProduction
+        
+        let finalGroup: String? = group ?? (isProduction ? "Production" : nil)
+        self.group = finalGroup
+        let isProdGroup = finalGroup?.caseInsensitiveCompare("Production") == .orderedSame || finalGroup?.caseInsensitiveCompare("Prod") == .orderedSame
+        self.isProduction = isProduction || isProdGroup
+        
         self.useSSHTunnel = useSSHTunnel
         self.sshHost = sshHost
         self.sshPort = sshPort
@@ -79,7 +86,7 @@ struct ConnectionConfig: Codable, Identifiable, Hashable {
 
     // CodingKeys excludes sshPassphrase from disk persistence
     enum CodingKeys: String, CodingKey {
-        case id, name, host, port, user, database, colorHex, useSSL, isProduction
+        case id, name, host, port, user, database, colorHex, useSSL, isProduction, group, tags
         case useSSHTunnel, sshHost, sshPort, sshUser, sshAuthMode, sshKeyPath
         case sshStrictHostKeyChecking
         case sslCAPath
@@ -97,7 +104,13 @@ struct ConnectionConfig: Codable, Identifiable, Hashable {
         self.database = try container.decode(String.self, forKey: .database)
         self.colorHex = try container.decode(String.self, forKey: .colorHex)
         self.useSSL = try container.decode(Bool.self, forKey: .useSSL)
-        self.isProduction = try container.decode(Bool.self, forKey: .isProduction)
+        let isProd = try container.decode(Bool.self, forKey: .isProduction)
+        let loadedGroup = try container.decodeIfPresent(String.self, forKey: .group)
+        let legacyTags = try container.decodeIfPresent([String].self, forKey: .tags)
+        let resolvedGroup = loadedGroup ?? legacyTags?.first ?? (isProd ? "Production" : nil)
+        self.group = resolvedGroup
+        let isProdGroup = resolvedGroup?.caseInsensitiveCompare("Production") == .orderedSame || resolvedGroup?.caseInsensitiveCompare("Prod") == .orderedSame
+        self.isProduction = isProd || isProdGroup
         self.useSSHTunnel = try container.decode(Bool.self, forKey: .useSSHTunnel)
         self.sshHost = try container.decode(String.self, forKey: .sshHost)
         self.sshPort = try container.decode(Int.self, forKey: .sshPort)
@@ -122,6 +135,7 @@ struct ConnectionConfig: Codable, Identifiable, Hashable {
         try container.encode(colorHex, forKey: .colorHex)
         try container.encode(useSSL, forKey: .useSSL)
         try container.encode(isProduction, forKey: .isProduction)
+        try container.encodeIfPresent(group, forKey: .group)
         try container.encode(useSSHTunnel, forKey: .useSSHTunnel)
         try container.encode(sshHost, forKey: .sshHost)
         try container.encode(sshPort, forKey: .sshPort)
@@ -152,6 +166,79 @@ struct ConnectionConfig: Codable, Identifiable, Hashable {
             return "\(user)@\(host):\(port) (via \(sshHost))"
         }
         return "\(user)@\(host):\(port)"
+    }
+    
+    // MARK: - Group Management
+    
+    /// Display name of the group for this connection, or nil if ungrouped
+    var displayGroup: String? {
+        if let g = group?.trimmingCharacters(in: .whitespacesAndNewlines), !g.isEmpty {
+            return g
+        }
+        if isProduction {
+            return "Production"
+        }
+        return nil
+    }
+    
+    /// Assigns this connection to a group (single group per connection)
+    mutating func setGroup(_ newGroup: String?) {
+        let trimmed = newGroup?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let g = trimmed, !g.isEmpty {
+            self.group = g
+            let hex = ConnectionStore.shared.groupColorHex(for: g)
+            if g.caseInsensitiveCompare("Production") == .orderedSame || g.caseInsensitiveCompare("Prod") == .orderedSame || hex.caseInsensitiveCompare("#ef4444") == .orderedSame {
+                self.isProduction = true
+            } else {
+                self.isProduction = false
+            }
+        } else {
+            self.group = nil
+            self.isProduction = false
+        }
+    }
+    
+    
+    /// Group color presets for user selection
+    public struct GroupColorPreset: Identifiable, Hashable {
+        public let id: String
+        public let name: String
+        public let hex: String
+        
+        public init(id: String, name: String, hex: String) {
+            self.id = id
+            self.name = name
+            self.hex = hex
+        }
+    }
+    
+    public static let groupColorPresets: [GroupColorPreset] = [
+        GroupColorPreset(id: "red", name: "Red", hex: "#ef4444"),
+        GroupColorPreset(id: "orange", name: "Orange", hex: "#f97316"),
+        GroupColorPreset(id: "amber", name: "Amber", hex: "#f59e0b"),
+        GroupColorPreset(id: "emerald", name: "Emerald", hex: "#10b981"),
+        GroupColorPreset(id: "cyan", name: "Cyan", hex: "#06b6d4"),
+        GroupColorPreset(id: "blue", name: "Blue", hex: "#3b82f6"),
+        GroupColorPreset(id: "indigo", name: "Indigo", hex: "#6366f1"),
+        GroupColorPreset(id: "purple", name: "Purple", hex: "#8b5cf6"),
+        GroupColorPreset(id: "pink", name: "Pink", hex: "#ec4899"),
+        GroupColorPreset(id: "slate", name: "Slate", hex: "#64748b")
+    ]
+    
+    /// Returns the hex string for a group
+    public static func groupHex(for groupName: String) -> String {
+        ConnectionStore.shared.groupColorHex(for: groupName)
+    }
+    
+    /// Returns visual styling (background, text, border) for a group badge
+    public static func groupColor(for groupName: String) -> (bg: Color, text: Color, border: Color) {
+        let hex = ConnectionStore.shared.groupColorHex(for: groupName)
+        let baseColor = Color(hex: hex)
+        return (
+            bg: baseColor.opacity(0.18),
+            text: baseColor,
+            border: baseColor.opacity(0.55)
+        )
     }
 }
 

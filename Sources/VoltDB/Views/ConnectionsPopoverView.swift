@@ -17,7 +17,8 @@ struct ConnectionsPopoverView: View {
         if active.name.lowercased().contains(query) ||
             active.host.lowercased().contains(query) ||
             active.user.lowercased().contains(query) ||
-            active.database.lowercased().contains(query) {
+            active.database.lowercased().contains(query) ||
+            (active.displayGroup?.lowercased().contains(query) ?? false) {
             return active
         }
         return nil
@@ -32,7 +33,8 @@ struct ConnectionsPopoverView: View {
             conn.name.lowercased().contains(query) ||
             conn.host.lowercased().contains(query) ||
             conn.user.lowercased().contains(query) ||
-            conn.database.lowercased().contains(query)
+            conn.database.lowercased().contains(query) ||
+            (conn.displayGroup?.lowercased().contains(query) ?? false)
         }
     }
     
@@ -165,7 +167,7 @@ struct ConnectionsPopoverView: View {
                 ProgressView().controlSize(.mini).scaleEffect(0.6)
                 Text("Connecting...")
                     .font(.system(size: 9, weight: .semibold))
-                    .foregroundColor(AppTheme.warning)
+                    .foregroundColor(AppTheme.textSecondary)
             }
         case .error(let msg):
             HStack(spacing: 4) {
@@ -188,16 +190,26 @@ struct ConnectionsPopoverView: View {
     @ViewBuilder
     private func activeConnectionRow(_ conn: ConnectionConfig) -> some View {
         HStack(spacing: 8) {
-            // Connection status / color dot
+            // Connection status / group color dot
             Circle()
-                .fill(appState.connectionStatus == .connected ? AppTheme.success : (appState.connectionStatus == .connecting ? AppTheme.warning : conn.color))
+                .fill(
+                    appState.connectionStatus == .connected
+                        ? (conn.displayGroup.map { Color(hex: appState.groupColorHex(for: $0)) } ?? AppTheme.success)
+                        : (appState.connectionStatus == .connecting ? AppTheme.textMuted : AppTheme.error)
+                )
                 .frame(width: 8, height: 8)
             
             VStack(alignment: .leading, spacing: 2) {
-                Text(conn.name)
-                    .font(.system(size: 12, weight: .bold))
-                    .foregroundColor(AppTheme.textPrimary)
-                    .lineLimit(1)
+                HStack(spacing: 5) {
+                    Text(conn.name)
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundColor(AppTheme.textPrimary)
+                        .lineLimit(1)
+                    
+                    if let grp = conn.displayGroup {
+                        ConnectionGroupBadge(group: grp, size: .mini)
+                    }
+                }
                 
                 Text(conn.displaySubtitle)
                     .font(.system(size: 10))
@@ -279,16 +291,22 @@ struct ConnectionsPopoverView: View {
             }
         } label: {
             HStack(spacing: 8) {
-                // Connection status / color dot
-                Circle()
-                    .fill(conn.color)
-                    .frame(width: 8, height: 8)
+                Image(systemName: "cylinder.split.1x2")
+                    .font(.system(size: 10))
+                    .foregroundColor(AppTheme.textMuted)
+                    .frame(width: 10, height: 10)
                 
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(conn.name)
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundColor(AppTheme.textPrimary)
-                        .lineLimit(1)
+                    HStack(spacing: 5) {
+                        Text(conn.name)
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundColor(AppTheme.textPrimary)
+                            .lineLimit(1)
+                        
+                        if let grp = conn.displayGroup {
+                            ConnectionGroupBadge(group: grp, size: .mini)
+                        }
+                    }
                     
                     Text(conn.displaySubtitle)
                         .font(.system(size: 10))

@@ -24,6 +24,17 @@ struct ConnectionManagerView: View {
     @State private var isConnecting = false
     @State private var connectionErrorMessage: String? = nil
     
+    // Group Organization State
+    @State private var isGroupedView: Bool = true
+    @State private var collapsedGroups: Set<String> = ConnectionStore.shared.loadCollapsedGroups()
+    @State private var colorPickerGroupId: String? = nil
+    @State private var isShowingNewGroupSheet = false
+    @State private var newGroupNameInput = ""
+    @State private var newGroupColorHex = "#3b82f6"
+    @State private var isShowingRenameGroupSheet = false
+    @State private var groupToRename = ""
+    @State private var renameGroupInput = ""
+    
     // Master Password Vault State
     @State private var vaultStore = VaultStore.shared
     @State private var isShowingUnlockVaultSheet = false
@@ -43,17 +54,69 @@ struct ConnectionManagerView: View {
         return "v0.1.0"
     }
     
+    /// Unique list of all groups present in saved connections, sorted with priority environments first
+    private var allGroups: [String] {
+        var set = Set<String>()
+        for g in appState.customGroups {
+            set.insert(g)
+        }
+        for conn in appState.savedConnections {
+            if let g = conn.displayGroup {
+                set.insert(g)
+            }
+        }
+        return set.sorted { a, b in
+            let prio = ["PRODUCTION": 1, "PROD": 1, "STAGING": 2, "DEVELOPMENT": 3, "DEV": 3, "TESTING": 4, "QA": 4, "LOCAL": 5]
+            let pA = prio[a.uppercased()] ?? 99
+            let pB = prio[b.uppercased()] ?? 99
+            if pA != pB { return pA < pB }
+            return a.localizedCaseInsensitiveCompare(b) == .orderedAscending
+        }
+    }
+    
+    /// Connections filtered by search query
     private var filteredConnections: [ConnectionConfig] {
-        if searchText.isEmpty {
-            return appState.savedConnections
+        var conns = appState.savedConnections
+        
+        if !searchText.isEmpty {
+            let query = searchText.lowercased()
+            conns = conns.filter { conn in
+                conn.name.lowercased().contains(query) ||
+                conn.host.lowercased().contains(query) ||
+                conn.user.lowercased().contains(query) ||
+                conn.database.lowercased().contains(query) ||
+                (conn.displayGroup?.lowercased().contains(query) ?? false)
+            }
         }
-        let query = searchText.lowercased()
-        return appState.savedConnections.filter { conn in
-            conn.name.lowercased().contains(query) ||
-            conn.host.lowercased().contains(query) ||
-            conn.user.lowercased().contains(query) ||
-            conn.database.lowercased().contains(query)
+        
+        return conns
+    }
+    
+    /// Grouped sections by group (each connection belongs to exactly one group)
+    private var groupedSections: [(group: String?, connections: [ConnectionConfig])] {
+        let conns = filteredConnections
+        var sections: [(group: String?, connections: [ConnectionConfig])] = []
+        
+        for grp in allGroups {
+            let matching = conns.filter { conn in
+                conn.displayGroup?.caseInsensitiveCompare(grp) == .orderedSame
+            }
+            if !matching.isEmpty || searchText.isEmpty || grp.lowercased().contains(searchText.lowercased()) {
+                sections.append((group: grp, connections: matching))
+            }
         }
+        
+        let ungrouped = conns.filter { $0.displayGroup == nil }
+        if !ungrouped.isEmpty {
+            sections.append((group: nil, connections: ungrouped))
+        }
+        
+        return sections
+    }
+    
+    /// Merged groups for context menu "Move to Group"
+    private var allKnownGroupsForMenu: [String] {
+        return allGroups
     }
     
     var body: some View {
@@ -242,34 +305,57 @@ struct ConnectionManagerView: View {
             HStack(spacing: 0) {
                 // Left Connections Sidebar
                 VStack(spacing: 0) {
-                    // Search box for saved connections
+                    // Search & View Mode row
                     HStack(spacing: 6) {
-                        Image(systemName: "magnifyingglass")
-                            .font(.system(size: 11))
-                            .foregroundColor(AppTheme.textMuted)
-                        
-                        TextField("Search connections...", text: $searchText)
-                            .textFieldStyle(PlainTextFieldStyle())
-                            .font(.system(size: 11))
-                            .foregroundColor(AppTheme.textPrimary)
-                        
-                        if !searchText.isEmpty {
-                            Button {
-                                searchText = ""
-                            } label: {
-                                Image(systemName: "xmark.circle.fill")
-                                    .font(.system(size: 10))
-                                    .foregroundColor(AppTheme.textMuted)
+                        HStack(spacing: 6) {
+                            Image(systemName: "magnifyingglass")
+                                .font(.system(size: 11))
+                                .foregroundColor(AppTheme.textMuted)
+                            
+                            TextField("Search connections or groups...", text: $searchText)
+                                .textFieldStyle(PlainTextFieldStyle())
+                                .font(.system(size: 11))
+                                .foregroundColor(AppTheme.textPrimary)
+                            
+                            if !searchText.isEmpty {
+                                Button {
+                                    searchText = ""
+                                } label: {
+                                    Image(systemName: "xmark.circle.fill")
+                                        .font(.system(size: 10))
+                                        .foregroundColor(AppTheme.textMuted)
+                                }
+                                .buttonStyle(.plain)
                             }
-                            .buttonStyle(.plain)
                         }
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 5)
+                        .background(AppTheme.backgroundTertiary)
+                        .cornerRadius(6)
+                        .overlay(RoundedRectangle(cornerRadius: 6).stroke(AppTheme.border.opacity(0.5), lineWidth: 1))
+                        
+                        // Toggle Grouped / Flat View
+                        Button {
+                            isGroupedView.toggle()
+                        } label: {
+                            Image(systemName: isGroupedView ? "folder.fill" : "list.bullet")
+                                .font(.system(size: 11))
+                                .foregroundColor(isGroupedView ? AppTheme.accent : AppTheme.textSecondary)
+                                .frame(width: 26, height: 26)
+                                .background(isGroupedView ? AppTheme.accent.opacity(0.15) : AppTheme.backgroundTertiary)
+                                .cornerRadius(6)
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 6)
+                                        .stroke(isGroupedView ? AppTheme.accent.opacity(0.4) : AppTheme.border.opacity(0.5), lineWidth: 1)
+                                )
+                        }
+                        .buttonStyle(.plain)
+                        .help(isGroupedView ? "Viewing by Groups (Click for flat list)" : "Flat list (Click to group by folders)")
                     }
                     .padding(.horizontal, 8)
-                    .padding(.vertical, 5)
-                    .background(AppTheme.backgroundTertiary)
-                    .cornerRadius(6)
-                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(AppTheme.border.opacity(0.5), lineWidth: 1))
-                    .padding(8)
+                    .padding(.vertical, 8)
+                    
+                    Divider()
                     
                     ScrollView {
                         VStack(spacing: 4) {
@@ -282,31 +368,163 @@ struct ConnectionManagerView: View {
                                     Text(appState.savedConnections.isEmpty ? "No Saved Connections" : "No Matching Connections")
                                         .font(.caption)
                                         .foregroundColor(AppTheme.textSecondary)
+                                        .multilineTextAlignment(.center)
                                 }
                                 .frame(maxWidth: .infinity)
                                 .padding(.vertical, 30)
+                                .padding(.horizontal, 10)
+                            } else if isGroupedView {
+                                // Grouped by section folders
+                                ForEach(groupedSections, id: \.group) { section in
+                                    let groupName = section.group ?? "Ungrouped"
+                                    let isCollapsed = collapsedGroups.contains(groupName)
+                                    
+                                    VStack(alignment: .leading, spacing: 3) {
+                                        // Collapsible Group Header
+                                        HStack(spacing: 5) {
+                                            HStack(spacing: 5) {
+                                                Image(systemName: isCollapsed ? "chevron.right" : "chevron.down")
+                                                    .font(.system(size: 8.5, weight: .bold))
+                                                    .foregroundColor(AppTheme.textMuted)
+                                                    .frame(width: 10)
+                                                
+                                                Image(systemName: isCollapsed ? "folder" : "folder.fill")
+                                                    .font(.system(size: 10))
+                                                    .foregroundColor(section.group != nil ? Color(hex: appState.groupColorHex(for: groupName)) : AppTheme.textMuted)
+                                                
+                                                if let grp = section.group {
+                                                    ConnectionGroupBadge(group: grp, size: .small)
+                                                } else {
+                                                    Text("UNGROUPED")
+                                                        .font(.system(size: 9.5, weight: .bold))
+                                                        .foregroundColor(AppTheme.textMuted)
+                                                        .padding(.horizontal, 5)
+                                                        .padding(.vertical, 2)
+                                                        .background(AppTheme.backgroundTertiary)
+                                                        .cornerRadius(4)
+                                                }
+                                                
+                                                Text("(\(section.connections.count))")
+                                                    .font(.system(size: 9.5, weight: .semibold))
+                                                    .foregroundColor(AppTheme.textMuted)
+                                            }
+                                            
+                                            Spacer()
+                                        }
+                                        .contentShape(Rectangle())
+                                        .onTapGesture {
+                                            if isCollapsed {
+                                                collapsedGroups.remove(groupName)
+                                            } else {
+                                                collapsedGroups.insert(groupName)
+                                            }
+                                        }
+                                        .padding(.horizontal, 6)
+                                        .padding(.vertical, 5)
+                                        .popover(isPresented: Binding(
+                                            get: { colorPickerGroupId == section.group && section.group != nil },
+                                            set: { isPresented in
+                                                if !isPresented && colorPickerGroupId == section.group {
+                                                    colorPickerGroupId = nil
+                                                }
+                                            }
+                                        ), arrowEdge: .bottom) {
+                                            if let grp = section.group {
+                                                let currentHex = appState.groupColorHex(for: grp)
+                                                LazyVGrid(columns: Array(repeating: GridItem(.fixed(26), spacing: 6), count: 5), spacing: 6) {
+                                                    ForEach(ConnectionConfig.groupColorPresets, id: \.hex) { preset in
+                                                        let isSelected = currentHex.caseInsensitiveCompare(preset.hex) == .orderedSame
+                                                        Button {
+                                                            appState.setGroupColor(preset.hex, for: grp)
+                                                            colorPickerGroupId = nil
+                                                        } label: {
+                                                            ZStack {
+                                                                Circle()
+                                                                    .fill(Color(hex: preset.hex))
+                                                                    .frame(width: 20, height: 20)
+                                                                
+                                                                if isSelected {
+                                                                    Circle()
+                                                                        .stroke(Color.white, lineWidth: 2)
+                                                                        .frame(width: 24, height: 24)
+                                                                    Image(systemName: "checkmark")
+                                                                        .font(.system(size: 8, weight: .bold))
+                                                                        .foregroundColor(.white)
+                                                                }
+                                                            }
+                                                            .frame(width: 26, height: 26)
+                                                            .contentShape(Circle())
+                                                        }
+                                                        .buttonStyle(.plain)
+                                                        .help(preset.name)
+                                                    }
+                                                }
+                                                .padding(8)
+                                                .background(AppTheme.backgroundSecondary)
+                                            }
+                                        }
+                                        .contextMenu {
+                                            Button("New Connection in \(groupName)") {
+                                                createNewConnection(inGroup: section.group)
+                                            }
+                                            if let grp = section.group {
+                                                Button("Rename Group...") {
+                                                    groupToRename = grp
+                                                    renameGroupInput = grp
+                                                    isShowingRenameGroupSheet = true
+                                                }
+                                                
+                                                Button("Change Color...") {
+                                                    colorPickerGroupId = grp
+                                                }
+                                                
+                                                Divider()
+                                                Button("Delete Group", role: .destructive) {
+                                                    appState.deleteGroup(grp)
+                                                }
+                                            }
+                                        }
+                                        
+                                        if !isCollapsed {
+                                            if section.connections.isEmpty {
+                                                Text("No connections in group")
+                                                    .font(.system(size: 10))
+                                                    .foregroundColor(AppTheme.textMuted)
+                                                    .padding(.leading, 26)
+                                                    .padding(.vertical, 4)
+                                            } else {
+                                                ForEach(section.connections) { conn in
+                                                    connectionRow(conn)
+                                                        .padding(.leading, 16)
+                                                }
+                                            }
+                                        }
+                                    }
+                                    .padding(.top, 6)
+                                }
                             } else {
+                                // Flat list
                                 ForEach(conns) { conn in
                                     connectionRow(conn)
                                 }
                             }
                         }
                         .padding(.horizontal, 8)
-                        .padding(.bottom, 8)
+                        .padding(.vertical, 6)
                     }
                     
                     Divider()
                     
-                    HStack {
+                    HStack(spacing: 6) {
                         Button {
                             createNewConnection()
                         } label: {
-                            HStack(spacing: 6) {
+                            HStack(spacing: 5) {
                                 Image(systemName: "plus.circle.fill")
                                     .foregroundColor(AppTheme.accent)
-                                    .font(.system(size: 13))
+                                    .font(.system(size: 12))
                                 Text("New Connection")
-                                    .font(.system(size: 12, weight: .semibold))
+                                    .font(.system(size: 11, weight: .semibold))
                                     .foregroundColor(AppTheme.textPrimary)
                             }
                             .frame(maxWidth: .infinity)
@@ -315,11 +533,31 @@ struct ConnectionManagerView: View {
                             .cornerRadius(6)
                         }
                         .buttonStyle(.plain)
+                        
+                        Button {
+                            newGroupNameInput = ""
+                            isShowingNewGroupSheet = true
+                        } label: {
+                            HStack(spacing: 4) {
+                                Image(systemName: "folder.badge.plus")
+                                    .foregroundColor(AppTheme.accent)
+                                    .font(.system(size: 11))
+                                Text("New Group")
+                                    .font(.system(size: 11, weight: .semibold))
+                                    .foregroundColor(AppTheme.textPrimary)
+                            }
+                            .padding(.horizontal, 8)
+                            .frame(height: 28)
+                            .background(AppTheme.backgroundTertiary)
+                            .cornerRadius(6)
+                        }
+                        .buttonStyle(.plain)
+                        .help("Create a new connection group")
                     }
                     .padding(.horizontal, 8)
                     .frame(height: 44)
                 }
-                .frame(width: 250)
+                .frame(width: 260)
                 .background(AppTheme.backgroundSecondary)
                 
                 Divider()
@@ -382,8 +620,11 @@ struct ConnectionManagerView: View {
             }
         }
         .ignoresSafeArea()
-        .frame(width: 820, height: 575)
+        .frame(width: 840, height: 580)
         .background(AppTheme.backgroundPrimary)
+        .background(WindowAccessor { window in
+            setupConnectionManagerWindow(window)
+        })
         .sheet(isPresented: $isShowingUnlockVaultSheet) {
             VStack(spacing: 16) {
                 HStack {
@@ -448,6 +689,123 @@ struct ConnectionManagerView: View {
             } message: {
                 Text("Are you sure you want to reset the vault? All saved encrypted database passwords and SSH passphrases will be permanently deleted from disk. You can configure a new Master Password afterwards.")
             }
+        }
+        .sheet(isPresented: $isShowingNewGroupSheet) {
+            VStack(spacing: 16) {
+                HStack {
+                    Image(systemName: "folder.badge.plus")
+                        .font(.system(size: 24))
+                        .foregroundColor(AppTheme.accent)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Create Connection Group")
+                            .font(.headline)
+                            .foregroundColor(AppTheme.textPrimary)
+                        Text("Organize your database connections into logical groups.")
+                            .font(.caption)
+                            .foregroundColor(AppTheme.textSecondary)
+                    }
+                    Spacer()
+                }
+                
+                TextField("Group Name (e.g. Staging, Analytics, EU-West)", text: $newGroupNameInput)
+                    .textFieldStyle(.roundedBorder)
+                    .onSubmit {
+                        createGroupAction()
+                    }
+                
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Group Color")
+                        .font(.caption)
+                        .foregroundColor(AppTheme.textSecondary)
+                    
+                    HStack(spacing: 8) {
+                        ForEach(ConnectionConfig.groupColorPresets, id: \.hex) { preset in
+                            Button {
+                                newGroupColorHex = preset.hex
+                            } label: {
+                                ZStack {
+                                    Circle()
+                                        .fill(Color(hex: preset.hex))
+                                        .frame(width: 22, height: 22)
+                                    if newGroupColorHex.caseInsensitiveCompare(preset.hex) == .orderedSame {
+                                        Circle()
+                                            .stroke(Color.white, lineWidth: 2)
+                                            .frame(width: 26, height: 26)
+                                        Image(systemName: "checkmark")
+                                            .font(.system(size: 9, weight: .bold))
+                                            .foregroundColor(.white)
+                                    }
+                                }
+                                .frame(width: 28, height: 28)
+                            }
+                            .buttonStyle(.plain)
+                            .help(preset.name)
+                        }
+                    }
+                }
+                
+                HStack {
+                    Button("Cancel") {
+                        isShowingNewGroupSheet = false
+                    }
+                    .keyboardShortcut(.cancelAction)
+                    
+                    Spacer()
+                    
+                    Button("Create") {
+                        createGroupAction()
+                    }
+                    .keyboardShortcut(.defaultAction)
+                    .buttonStyle(.borderedProminent)
+                    .disabled(newGroupNameInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+            }
+            .padding(20)
+            .frame(width: 380)
+            .background(AppTheme.backgroundPrimary)
+        }
+        .sheet(isPresented: $isShowingRenameGroupSheet) {
+            VStack(spacing: 16) {
+                HStack {
+                    Image(systemName: "pencil.circle.fill")
+                        .font(.system(size: 24))
+                        .foregroundColor(AppTheme.accent)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Rename Connection Group")
+                            .font(.headline)
+                            .foregroundColor(AppTheme.textPrimary)
+                        Text("Update the name of \"\(groupToRename)\" and all its connections.")
+                            .font(.caption)
+                            .foregroundColor(AppTheme.textSecondary)
+                    }
+                    Spacer()
+                }
+                
+                TextField("Group Name", text: $renameGroupInput)
+                    .textFieldStyle(.roundedBorder)
+                    .onSubmit {
+                        renameGroupAction()
+                    }
+                
+                HStack {
+                    Button("Cancel") {
+                        isShowingRenameGroupSheet = false
+                    }
+                    .keyboardShortcut(.cancelAction)
+                    
+                    Spacer()
+                    
+                    Button("Rename") {
+                        renameGroupAction()
+                    }
+                    .keyboardShortcut(.defaultAction)
+                    .buttonStyle(.borderedProminent)
+                    .disabled(renameGroupInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || renameGroupInput.trimmingCharacters(in: .whitespacesAndNewlines) == groupToRename)
+                }
+            }
+            .padding(20)
+            .frame(width: 380)
+            .background(AppTheme.backgroundPrimary)
         }
         .sheet(isPresented: $isShowingVaultSettingsSheet) {
             VStack(spacing: 16) {
@@ -517,7 +875,14 @@ struct ConnectionManagerView: View {
         } message: {
             Text("Are you sure you want to reset the vault? All saved encrypted database passwords and SSH passphrases will be permanently deleted from disk. You can configure a new Master Password afterwards.")
         }
+        .onChange(of: collapsedGroups) { _, newGroups in
+            ConnectionStore.shared.saveCollapsedGroups(newGroups)
+        }
         .onAppear {
+            collapsedGroups = ConnectionStore.shared.loadCollapsedGroups()
+            appState.loadConnections()
+            appState.loadCustomGroups()
+            appState.loadGroupColors()
             (NSApp.delegate as? AppDelegate)?.openLauncherWindow = {
                 openWindow(id: "launcher")
             }
@@ -533,6 +898,32 @@ struct ConnectionManagerView: View {
                 isShowingUnlockVaultSheet = true
             }
         }
+        .environment(appState)
+    }
+    
+    private func createGroupAction() {
+        let trimmed = newGroupNameInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        appState.createGroup(trimmed, colorHex: newGroupColorHex)
+        isShowingNewGroupSheet = false
+        newGroupNameInput = ""
+        newGroupColorHex = "#3b82f6"
+    }
+    
+    private func renameGroupAction() {
+        let trimmed = renameGroupInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, trimmed != groupToRename else {
+            isShowingRenameGroupSheet = false
+            return
+        }
+        if collapsedGroups.contains(groupToRename) {
+            collapsedGroups.remove(groupToRename)
+            collapsedGroups.insert(trimmed)
+        }
+        appState.renameGroup(from: groupToRename, to: trimmed)
+        isShowingRenameGroupSheet = false
+        groupToRename = ""
+        renameGroupInput = ""
     }
     
     private func unlockVaultAction() {
@@ -566,35 +957,32 @@ struct ConnectionManagerView: View {
         }
     }
     
-    private func setupConnectionManagerWindow() {
-        DispatchQueue.main.async {
-            guard let window = NSApp.windows.first(where: {
-                $0.isVisible && ($0.title == "VoltDB Connection Manager" || $0.title == "VoltDB")
-            }) else { return }
-            
-            let targetSize = NSSize(width: 820, height: 575)
-            window.setContentSize(targetSize)
-            window.minSize = targetSize
-            window.maxSize = targetSize
-            window.center()
-            
-            window.styleMask.remove([.resizable, .miniaturizable])
-            window.showsResizeIndicator = false
-            
-            // Hide & disable zoom (green) and miniaturize (yellow)
-            if let zoom = window.standardWindowButton(.zoomButton) {
-                zoom.isHidden = true
-                zoom.isEnabled = false
-            }
-            if let mini = window.standardWindowButton(.miniaturizeButton) {
-                mini.isHidden = true
-                mini.isEnabled = false
-            }
-            
-            window.title = "VoltDB Connection Manager"
-            window.titleVisibility = .hidden
-            window.titlebarAppearsTransparent = true
+    private func setupConnectionManagerWindow(_ targetWindow: NSWindow? = nil) {
+        guard let window = targetWindow ?? NSApp.windows.first(where: {
+            $0.isVisible && ($0.title == "VoltDB Connection Manager" || $0.title == "VoltDB")
+        }) else { return }
+        
+        let targetSize = NSSize(width: 840, height: 580)
+        window.minSize = targetSize
+        window.maxSize = targetSize
+        
+        window.styleMask.remove([.resizable, .miniaturizable])
+        window.tabbingMode = .disallowed
+        window.showsResizeIndicator = false
+        
+        // Hide & disable zoom (green) and miniaturize (yellow)
+        if let zoom = window.standardWindowButton(.zoomButton) {
+            zoom.isHidden = true
+            zoom.isEnabled = false
         }
+        if let mini = window.standardWindowButton(.miniaturizeButton) {
+            mini.isHidden = true
+            mini.isEnabled = false
+        }
+        
+        window.title = "VoltDB Connection Manager"
+        window.titleVisibility = .hidden
+        window.titlebarAppearsTransparent = true
     }
     
     @ViewBuilder
@@ -608,25 +996,25 @@ struct ConnectionManagerView: View {
                     ProgressView()
                         .controlSize(.mini)
                         .scaleEffect(0.7)
+                        .frame(width: 14, height: 14)
                 } else {
-                    Circle()
-                        .fill(conn.color)
-                        .frame(width: 10, height: 10)
+                    Image(systemName: "cylinder.split.1x2")
+                        .font(.system(size: 11))
+                        .foregroundColor(isSelected ? .white.opacity(0.85) : AppTheme.textMuted)
+                        .frame(width: 14, height: 14)
                 }
                 
-                VStack(alignment: .leading, spacing: 2) {
-                    HStack {
+                VStack(alignment: .leading, spacing: 3) {
+                    HStack(spacing: 5) {
                         Text(conn.name)
                             .font(.subheadline.bold())
                             .foregroundColor(isSelected ? .white : AppTheme.textPrimary)
                             .lineLimit(1)
-                        if conn.isProduction {
-                            Text("PROD")
-                                .font(.system(size: 8, weight: .bold))
-                                .foregroundColor(.white)
-                                .padding(.horizontal, 4)
-                                .padding(.vertical, 1)
-                                .background(Color.red.cornerRadius(3))
+                        
+                        Spacer(minLength: 0)
+                        
+                        if !isGroupedView, let grp = conn.displayGroup {
+                            ConnectionGroupBadge(group: grp, size: .mini, isRowSelected: isSelected)
                         }
                     }
                     Text(conn.displaySubtitle)
@@ -674,6 +1062,40 @@ struct ConnectionManagerView: View {
             Button("Duplicate") {
                 duplicateConnection(conn)
             }
+            
+            Menu("Move to Group") {
+                ForEach(allKnownGroupsForMenu, id: \.self) { grp in
+                    let isCurrent = conn.displayGroup?.caseInsensitiveCompare(grp) == .orderedSame
+                    Button {
+                        var updated = conn
+                        updated.setGroup(grp)
+                        appState.saveConnection(updated, password: VaultStore.shared.retrieve(for: conn.id) ?? "")
+                        if selectedConnectionId == conn.id {
+                            selectConnection(updated)
+                        }
+                    } label: {
+                        HStack {
+                            Text(grp)
+                            if isCurrent {
+                                Image(systemName: "checkmark")
+                            }
+                        }
+                    }
+                }
+                
+                if conn.displayGroup != nil {
+                    Divider()
+                    Button("Remove from Group") {
+                        var updated = conn
+                        updated.setGroup(nil)
+                        appState.saveConnection(updated, password: VaultStore.shared.retrieve(for: conn.id) ?? "")
+                        if selectedConnectionId == conn.id {
+                            selectConnection(updated)
+                        }
+                    }
+                }
+            }
+            
             Divider()
             Button("Delete", role: .destructive) {
                 appState.deleteConnection(id: conn.id)
@@ -736,13 +1158,17 @@ struct ConnectionManagerView: View {
         }
     }
     
-    private func createNewConnection() {
+    private func createNewConnection(inGroup: String? = nil) {
         selectedConnectionId = nil
         isCreatingNew = true
         connectionErrorMessage = nil
         let uniqueName = ConnectionStore.shared.generateUniqueName(base: "MySQL Connection")
         let randomPreset = ConnectionConfig.presetColors.randomElement()?.hex ?? "#3b82f6"
-        editingConfig = ConnectionConfig(
+        var initialGroup: String? = nil
+        if let g = inGroup, g != "Ungrouped" {
+            initialGroup = g
+        }
+        var newConfig = ConnectionConfig(
             id: UUID(),
             name: uniqueName,
             host: "127.0.0.1",
@@ -753,7 +1179,10 @@ struct ConnectionManagerView: View {
             useSSL: false,
             isProduction: false
         )
-        password = ""
+        if let initialGroup = initialGroup {
+            newConfig.setGroup(initialGroup)
+        }
+        editingConfig = newConfig
     }
     
     private func duplicateConnection(_ conn: ConnectionConfig) {

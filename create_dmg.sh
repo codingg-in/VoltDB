@@ -22,7 +22,7 @@ mkdir -p "${STAGING_DIR}"
 # Copy app bundle
 cp -R "${APP_NAME}.app" "${STAGING_DIR}/"
 
-# Create Applications alias (TablePro approach: try Finder AppleScript, fall back to native alias template, then symlink)
+# Create Applications alias (try Finder AppleScript, fall back to native alias template, then symlink)
 echo "📁 Creating Applications alias with official icon..."
 osascript <<EOF 2>/dev/null || true
 tell application "Finder"
@@ -35,7 +35,7 @@ tell application "Finder"
 end tell
 EOF
 
-# Ensure custom icon attribute is set (matching TablePro)
+# Ensure custom icon attribute is set
 APPS_ICON="/System/Library/CoreServices/CoreTypes.bundle/Contents/Resources/ApplicationsFolderIcon.icns"
 if [ -f "$APPS_ICON" ] && [ -e "${STAGING_DIR}/Applications" ]; then
     if command -v SetFile &> /dev/null; then
@@ -44,7 +44,7 @@ if [ -f "$APPS_ICON" ] && [ -e "${STAGING_DIR}/Applications" ]; then
     fi
 fi
 
-# Build DMG (prefer create-dmg for styled layout, fallback to hdiutil like TablePro)
+# Build DMG (prefer create-dmg for styled layout, fallback to hdiutil)
 if command -v create-dmg &> /dev/null; then
     echo "Using create-dmg for styled layout..."
     CREATE_DMG_ARGS=(
