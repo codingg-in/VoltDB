@@ -163,6 +163,10 @@ struct QueryWorkspaceView: View {
             guard tabState.activeTab?.id == tab.id else { return }
             stopCurrentQuery()
         }
+        .onReceive(NotificationCenter.default.publisher(for: .explainQuery)) { _ in
+            guard tabState.activeTab?.id == tab.id else { return }
+            explainActiveQuery()
+        }
         .onReceive(NotificationCenter.default.publisher(for: .addNewRow)) { _ in
             guard tabState.activeTab?.id == tab.id else { return }
             addNewRow()

@@ -17,6 +17,14 @@ struct SQLFormatter {
         "INSERT INTO", "VALUES", "UPDATE", "SET", "DELETE FROM", "UNION", "UNION ALL"
     ]
     
+    private static let functions: Set<String> = [
+        "COUNT", "SUM", "AVG", "MIN", "MAX", "COALESCE", "IFNULL", "NULLIF",
+        "CONCAT", "CONCAT_WS", "SUBSTRING", "SUBSTR", "TRIM", "LTRIM", "RTRIM",
+        "LOWER", "UPPER", "LENGTH", "CHAR_LENGTH", "REPLACE", "ROUND", "FLOOR", "CEIL",
+        "DATE", "NOW", "CURDATE", "CURTIME", "DATEDIFF", "DATE_ADD", "DATE_SUB",
+        "JSON_EXTRACT", "JSON_UNQUOTE", "ROW_NUMBER", "RANK", "DENSE_RANK"
+    ]
+    
     static func format(_ sql: String) -> String {
         let trimmed = sql.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.isEmpty { return "" }
@@ -40,6 +48,24 @@ struct SQLFormatter {
         
         while i < tokens.count {
             let token = tokens[i]
+            
+            // Preserve blank lines between logical sections
+            if token.type == .blankLine {
+                pushLine()
+                if formattedLines.last?.isEmpty == false {
+                    formattedLines.append("")
+                }
+                i += 1
+                continue
+            }
+            
+            // Place comments cleanly on their own lines
+            if token.type == .comment {
+                pushLine()
+                formattedLines.append(token.text)
+                i += 1
+                continue
+            }
             
             // Check for two-word clauses (e.g. ORDER BY, GROUP BY, LEFT JOIN)
             var clauseCandidate = token.text.uppercased()
@@ -78,14 +104,24 @@ struct SQLFormatter {
                 } else if token.text == "," {
                     currentLine = currentLine.trimmingCharacters(in: .whitespaces) + ", "
                 } else if token.text == "(" {
-                    currentLine += "( "
+                    let trimmedCur = currentLine.trimmingCharacters(in: .whitespaces)
+                    if let lastWord = trimmedCur.split(separator: " ").last?.uppercased(),
+                       functions.contains(lastWord) {
+                        currentLine = trimmedCur + "("
+                    } else if !trimmedCur.isEmpty && !trimmedCur.hasSuffix("(") {
+                        currentLine = trimmedCur + " ("
+                    } else {
+                        currentLine += "("
+                    }
                 } else if token.text == ")" {
-                    currentLine = currentLine.trimmingCharacters(in: .whitespaces) + " ) "
+                    currentLine = currentLine.trimmingCharacters(in: .whitespaces) + ") "
                 } else {
                     currentLine += token.text + " "
                 }
-            case .literal, .comment:
+            case .literal:
                 currentLine += token.text + " "
+            case .comment, .blankLine:
+                break
             }
             
             i += 1
@@ -102,6 +138,7 @@ struct SQLFormatter {
         case literal
         case symbol
         case comment
+        case blankLine
     }
     
     private struct Token {
@@ -118,14 +155,34 @@ struct SQLFormatter {
         while i < len {
             let c = ns.character(at: i)
             
-            // Skip whitespace
+            // Whitespace & blank lines detection
             if CharacterSet.whitespacesAndNewlines.contains(UnicodeScalar(c)!) {
-                i += 1
+                var newlineCount = 0
+                while i < len, let scalar = UnicodeScalar(ns.character(at: i)),
+                      CharacterSet.whitespacesAndNewlines.contains(scalar) {
+                    if ns.character(at: i) == 10 /* '\n' */ {
+                        newlineCount += 1
+                    }
+                    i += 1
+                }
+                if newlineCount >= 2 {
+                    tokens.append(Token(text: "", type: .blankLine))
+                }
                 continue
             }
             
             // Line comment --
             if c == 45 && i + 1 < len && ns.character(at: i + 1) == 45 {
+                let start = i
+                while i < len && ns.character(at: i) != 10 && ns.character(at: i) != 13 {
+                    i += 1
+                }
+                tokens.append(Token(text: ns.substring(with: NSRange(location: start, length: i - start)), type: .comment))
+                continue
+            }
+            
+            // Line comment #
+            if c == 35 {
                 let start = i
                 while i < len && ns.character(at: i) != 10 && ns.character(at: i) != 13 {
                     i += 1

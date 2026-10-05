@@ -35,7 +35,13 @@ class TabState {
     @MainActor static let activeInstances = NSHashTable<TabState>.weakObjects()
     
     var tabs: [EditorTab] = []
-    var activeTabId: UUID? = nil
+    var activeTabId: UUID? = nil {
+        didSet {
+            if activeTabId != oldValue {
+                saveSession()
+            }
+        }
+    }
     var selectedRowIndex: Int? = nil
     private var queryCounter: Int = 1
     var currentConnectionId: UUID? = nil
@@ -83,6 +89,11 @@ class TabState {
     }
     
     func restoreSession(for connectionId: UUID?, defaultDatabase: String = "") {
+        // If already restored for this exact connection and we have tabs, avoid resetting active state
+        if self.currentConnectionId == connectionId && !self.tabs.isEmpty {
+            return
+        }
+        
         self.currentConnectionId = connectionId
         if let saved = TabSessionStore.shared.loadSession(connectionId: connectionId), !saved.tabs.isEmpty {
             self.tabs = saved.tabs.map { pt in
@@ -97,7 +108,11 @@ class TabState {
                 )
             }
             self.queryCounter = max(saved.queryCounter, tabs.count + 1)
-            self.activeTabId = saved.activeTabId ?? tabs.first?.id
+            if let savedActive = saved.activeTabId, tabs.contains(where: { $0.id == savedActive }) {
+                self.activeTabId = savedActive
+            } else {
+                self.activeTabId = tabs.first?.id
+            }
         } else {
             // First time: initialize with Query 1
             if tabs.isEmpty {
@@ -106,7 +121,7 @@ class TabState {
         }
     }
     
-    private func saveSession() {
+    func saveSession() {
         TabSessionStore.shared.saveSession(
             tabs: tabs,
             activeTabId: activeTabId,
@@ -159,6 +174,28 @@ class TabState {
             activeTabId = id
             saveSession()
         }
+    }
+    
+    func selectPreviousTab() {
+        guard !tabs.isEmpty, let currentId = activeTabId,
+              let currentIndex = tabs.firstIndex(where: { $0.id == currentId }) else { return }
+        let prevIndex = (currentIndex - 1 + tabs.count) % tabs.count
+        activeTabId = tabs[prevIndex].id
+        saveSession()
+    }
+    
+    func selectNextTab() {
+        guard !tabs.isEmpty, let currentId = activeTabId,
+              let currentIndex = tabs.firstIndex(where: { $0.id == currentId }) else { return }
+        let nextIndex = (currentIndex + 1) % tabs.count
+        activeTabId = tabs[nextIndex].id
+        saveSession()
+    }
+    
+    func selectTab(at index: Int) {
+        guard index >= 0 && index < tabs.count else { return }
+        activeTabId = tabs[index].id
+        saveSession()
     }
     
     func updateQueryText(for tabId: UUID, text: String) {

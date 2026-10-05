@@ -67,6 +67,13 @@ struct SQLEditorView: NSViewRepresentable {
         
         NotificationCenter.default.addObserver(
             context.coordinator,
+            selector: #selector(Coordinator.toggleCommentNotification),
+            name: .toggleComment,
+            object: nil
+        )
+        
+        NotificationCenter.default.addObserver(
+            context.coordinator,
             selector: #selector(Coordinator.scrollViewDidScroll),
             name: NSView.boundsDidChangeNotification,
             object: scrollView.contentView
@@ -98,6 +105,7 @@ struct SQLEditorView: NSViewRepresentable {
         if textView.string != text {
             let savedRange = textView.selectedRange()
             textView.string = text
+            textView.undoManager?.removeAllActions()
             let maxLoc = (text as NSString).length
             if savedRange.location <= maxLoc {
                 textView.setSelectedRange(savedRange)
@@ -119,6 +127,9 @@ struct SQLEditorView: NSViewRepresentable {
     
     static func dismantleNSView(_ scrollView: NSScrollView, coordinator: Coordinator) {
         coordinator.suggestionController.hide()
+        if let textView = scrollView.documentView as? NSTextView {
+            textView.undoManager?.removeAllActions()
+        }
     }
     
     @MainActor
@@ -1040,12 +1051,42 @@ struct SQLEditorView: NSViewRepresentable {
         
         @objc func formatSQL() {
             guard let textView = textView else { return }
-            let formatted = SQLFormatter.format(textView.string)
-            if formatted != textView.string {
-                textView.string = formatted
-                parent.text = formatted
-                highlightSyntax(in: textView.textStorage)
+            let fullText = textView.string
+            guard !fullText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+            
+            let selectedRange = textView.selectedRange()
+            let targetRange: NSRange
+            let textToFormat: String
+            
+            if selectedRange.length > 0 {
+                targetRange = selectedRange
+                textToFormat = (fullText as NSString).substring(with: selectedRange)
+            } else {
+                let cursor = selectedRange.location
+                if let current = SQLStatementExtractor.extractCurrentStatementWithRange(from: fullText, cursorPosition: cursor) {
+                    targetRange = current.range
+                    textToFormat = current.text
+                } else {
+                    targetRange = NSRange(location: 0, length: (fullText as NSString).length)
+                    textToFormat = fullText
+                }
             }
+            
+            guard !textToFormat.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+            let formatted = SQLFormatter.format(textToFormat)
+            if formatted != textToFormat {
+                if textView.shouldChangeText(in: targetRange, replacementString: formatted) {
+                    textView.replaceCharacters(in: targetRange, with: formatted)
+                    textView.didChangeText()
+                    let newCursor = min(targetRange.location + (formatted as NSString).length, (textView.string as NSString).length)
+                    textView.setSelectedRange(NSRange(location: newCursor, length: 0))
+                }
+            }
+        }
+        
+        @objc func toggleCommentNotification() {
+            guard let editor = textView as? EditorNSTextView else { return }
+            editor.toggleComment()
         }
         
         deinit {
@@ -1057,6 +1098,19 @@ struct SQLEditorView: NSViewRepresentable {
 // MARK: - Editor NSTextView Subclass
 
 final class EditorNSTextView: NSTextView {
+    private let customUndoManager = UndoManager()
+    
+    override var undoManager: UndoManager? {
+        return customUndoManager
+    }
+    
+    deinit {
+        customUndoManager.removeAllActions()
+        if let win = window {
+            win.undoManager?.removeAllActions(withTarget: self)
+        }
+    }
+    
     override func cut(_ sender: Any?) {
         let range = selectedRange()
         if range.length > 0 {
@@ -1071,13 +1125,33 @@ final class EditorNSTextView: NSTextView {
         if range.length > 0 {
             super.copy(sender)
         } else {
-            copyCurrentLine()
+            copyCurrentQueryOrLine()
         }
     }
     
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
-        if event.modifierFlags.contains(.command) && !event.modifierFlags.contains(.shift) && !event.modifierFlags.contains(.option) {
-            if let chars = event.charactersIgnoringModifiers?.lowercased() {
+        // Only handle key equivalents if this editor is actually the active first responder in the window
+        guard window?.firstResponder == self else {
+            return super.performKeyEquivalent(with: event)
+        }
+        
+        if event.modifierFlags.contains(.command) {
+            let chars = event.charactersIgnoringModifiers?.lowercased()
+            let isSlash = chars == "/" || event.keyCode == 44
+            
+            // Cmd + / -> Toggle Line Comment (-- )
+            if isSlash && !event.modifierFlags.contains(.shift) && !event.modifierFlags.contains(.option) {
+                toggleComment()
+                return true
+            }
+            
+            // Cmd + Shift + / or Cmd + Option + / -> Toggle Block Comment (/* ... */)
+            if isSlash && (event.modifierFlags.contains(.shift) || event.modifierFlags.contains(.option)) {
+                toggleBlockComment()
+                return true
+            }
+            
+            if !event.modifierFlags.contains(.shift) && !event.modifierFlags.contains(.option) {
                 if chars == "w" {
                     NotificationCenter.default.post(name: .closeActiveTab, object: nil)
                     return true
@@ -1087,7 +1161,18 @@ final class EditorNSTextView: NSTextView {
                     return true
                 }
                 if chars == "c" && selectedRange().length == 0 {
-                    copyCurrentLine()
+                    copyCurrentQueryOrLine()
+                    return true
+                }
+                if chars == "z" {
+                    customUndoManager.undo()
+                    return true
+                }
+            }
+            
+            if event.modifierFlags.contains(.shift) && !event.modifierFlags.contains(.option) {
+                if chars == "z" {
+                    customUndoManager.redo()
                     return true
                 }
             }
@@ -1114,17 +1199,185 @@ final class EditorNSTextView: NSTextView {
         }
     }
     
-    func copyCurrentLine() {
-        let nsString = string as NSString
-        guard nsString.length > 0 else { return }
-        
+    func copyCurrentQueryOrLine() {
         let cursor = selectedRange().location
-        let clampedCursor = min(cursor, nsString.length)
-        let lineRange = nsString.lineRange(for: NSRange(location: clampedCursor, length: 0))
-        let lineText = nsString.substring(with: lineRange)
+        let query = SQLStatementExtractor.extractRawStatement(from: string, cursorPosition: cursor)
+        let textToCopy: String
+        if !query.isEmpty {
+            textToCopy = query
+        } else {
+            let nsString = string as NSString
+            guard nsString.length > 0 else { return }
+            let clampedCursor = min(cursor, nsString.length)
+            let lineRange = nsString.lineRange(for: NSRange(location: clampedCursor, length: 0))
+            textToCopy = nsString.substring(with: lineRange).trimmingCharacters(in: .newlines)
+        }
+        guard !textToCopy.isEmpty else { return }
         
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
-        pasteboard.setString(lineText, forType: .string)
+        pasteboard.setString(textToCopy, forType: .string)
+    }
+    
+    func toggleComment() {
+        guard isEditable else { return }
+        let nsString = string as NSString
+        guard nsString.length > 0 else {
+            if shouldChangeText(in: NSRange(location: 0, length: 0), replacementString: "-- ") {
+                replaceCharacters(in: NSRange(location: 0, length: 0), with: "-- ")
+                didChangeText()
+                setSelectedRange(NSRange(location: 3, length: 0))
+            }
+            return
+        }
+        
+        let currentSel = selectedRange()
+        
+        // Determine the full line range spanning the selection
+        let fullLineRange: NSRange
+        if currentSel.length == 0 {
+            let cursor = min(currentSel.location, nsString.length)
+            fullLineRange = nsString.lineRange(for: NSRange(location: cursor, length: 0))
+        } else {
+            let endPos = currentSel.location + currentSel.length
+            let clampedEnd = min(endPos, nsString.length)
+            let effectiveLength: Int
+            if clampedEnd > currentSel.location && nsString.character(at: clampedEnd - 1) == 10 { // '\n'
+                effectiveLength = max(0, currentSel.length - 1)
+            } else {
+                effectiveLength = currentSel.length
+            }
+            fullLineRange = nsString.lineRange(for: NSRange(location: currentSel.location, length: effectiveLength))
+        }
+        
+        // Split fullLineRange into lines
+        var lines: [String] = []
+        var lineRanges: [NSRange] = []
+        var loc = fullLineRange.location
+        let endLoc = fullLineRange.location + fullLineRange.length
+        
+        while loc < endLoc {
+            let lr = nsString.lineRange(for: NSRange(location: loc, length: 0))
+            lineRanges.append(lr)
+            lines.append(nsString.substring(with: lr))
+            loc = lr.location + lr.length
+        }
+        
+        // Check if all non-empty lines are commented with "--"
+        let nonEmptyIndices = lines.indices.filter { idx in
+            !lines[idx].trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+        
+        let allCommented: Bool
+        if nonEmptyIndices.isEmpty {
+            allCommented = lines.allSatisfy { $0.trimmingCharacters(in: .whitespaces).hasPrefix("--") }
+        } else {
+            allCommented = nonEmptyIndices.allSatisfy { idx in
+                lines[idx].trimmingCharacters(in: .whitespaces).hasPrefix("--")
+            }
+        }
+        
+        // Transform lines
+        var newLines: [String] = []
+        
+        if allCommented {
+            // UNCOMMENT: remove leading "-- " or "--"
+            for line in lines {
+                if let commentRange = line.range(of: "--") {
+                    let prefix = line[..<commentRange.lowerBound]
+                    if prefix.allSatisfy({ $0.isWhitespace }) {
+                        var afterComment = line[commentRange.upperBound...]
+                        if afterComment.hasPrefix(" ") {
+                            afterComment = afterComment.dropFirst()
+                        }
+                        newLines.append(String(prefix) + String(afterComment))
+                        continue
+                    }
+                }
+                newLines.append(line)
+            }
+        } else {
+            // COMMENT: add "-- " to each line
+            for line in lines {
+                if lineRanges.count > 1 && line.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    newLines.append(line)
+                } else {
+                    if let firstNonSpace = line.firstIndex(where: { !$0.isWhitespace }) {
+                        let indent = line[..<firstNonSpace]
+                        let rest = line[firstNonSpace...]
+                        newLines.append(String(indent) + "-- " + String(rest))
+                    } else {
+                        newLines.append("-- " + line)
+                    }
+                }
+            }
+        }
+        
+        let replacement = newLines.joined()
+        if shouldChangeText(in: fullLineRange, replacementString: replacement) {
+            replaceCharacters(in: fullLineRange, with: replacement)
+            didChangeText()
+            
+            if currentSel.length == 0 {
+                let delta = (replacement as NSString).length - fullLineRange.length
+                let newCursor = min(max(fullLineRange.location, currentSel.location + delta), (string as NSString).length)
+                setSelectedRange(NSRange(location: newCursor, length: 0))
+            } else {
+                let newLength = (replacement as NSString).length
+                setSelectedRange(NSRange(location: fullLineRange.location, length: newLength))
+            }
+        }
+    }
+    
+    func toggleBlockComment() {
+        guard isEditable else { return }
+        let nsString = string as NSString
+        let sel = selectedRange()
+        guard sel.length > 0 else {
+            // If nothing is selected, comment current line as block
+            let cursor = min(sel.location, nsString.length)
+            let lineRange = nsString.lineRange(for: NSRange(location: cursor, length: 0))
+            let text = nsString.substring(with: lineRange).trimmingCharacters(in: .newlines)
+            let trimmed = text.trimmingCharacters(in: .whitespaces)
+            if trimmed.hasPrefix("/*") && trimmed.hasSuffix("*/") {
+                var inner = trimmed.dropFirst(2).dropLast(2)
+                if inner.hasPrefix(" ") { inner = inner.dropFirst() }
+                if inner.hasSuffix(" ") { inner = inner.dropLast() }
+                let rep = String(inner) + "\n"
+                if shouldChangeText(in: lineRange, replacementString: rep) {
+                    replaceCharacters(in: lineRange, with: rep)
+                    didChangeText()
+                }
+            } else {
+                let rep = "/* " + text + " */\n"
+                if shouldChangeText(in: lineRange, replacementString: rep) {
+                    replaceCharacters(in: lineRange, with: rep)
+                    didChangeText()
+                }
+            }
+            return
+        }
+        
+        let selectedText = nsString.substring(with: sel)
+        let trimmed = selectedText.trimmingCharacters(in: .whitespacesAndNewlines)
+        
+        if trimmed.hasPrefix("/*") && trimmed.hasSuffix("*/") {
+            var inner = trimmed.dropFirst(2).dropLast(2)
+            if inner.hasPrefix(" ") { inner = inner.dropFirst() }
+            if inner.hasSuffix(" ") { inner = inner.dropLast() }
+            let rep = String(inner)
+            if shouldChangeText(in: sel, replacementString: rep) {
+                replaceCharacters(in: sel, with: rep)
+                didChangeText()
+                setSelectedRange(NSRange(location: sel.location, length: (rep as NSString).length))
+            }
+        } else {
+            let rep = "/* " + selectedText + " */"
+            if shouldChangeText(in: sel, replacementString: rep) {
+                replaceCharacters(in: sel, with: rep)
+                didChangeText()
+                setSelectedRange(NSRange(location: sel.location, length: (rep as NSString).length))
+            }
+        }
     }
 }

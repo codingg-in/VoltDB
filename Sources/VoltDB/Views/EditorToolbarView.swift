@@ -70,18 +70,18 @@ struct EditorToolbarView: View {
                 .buttonStyle(.plain)
                 .help("Format SQL (⇧⌘I)")
                 
-                // 3. Save / Star Query
+                // 3. Toggle Comment
                 Button {
-                    NotificationCenter.default.post(name: .formatSQL, object: nil)
+                    NotificationCenter.default.post(name: .toggleComment, object: nil)
                 } label: {
-                    Image(systemName: "star")
+                    Image(systemName: "text.bubble")
                         .font(.system(size: 11))
                         .foregroundColor(AppTheme.textSecondary)
                         .frame(width: 22, height: 22)
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .help("Save / Favorite Query")
+                .help("Toggle Comment (⌘/)")
                 
                 // Vertical Separator
                 Rectangle()

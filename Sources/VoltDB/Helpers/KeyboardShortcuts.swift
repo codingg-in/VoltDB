@@ -28,10 +28,53 @@ class KeyboardShortcutManager {
                         }
                     }
                     
+                    // Cmd+T -> New Tab in Workspace
+                    if characters == "t" && !event.modifierFlags.contains(.shift) {
+                        if let keyWindow = NSApp.keyWindow ?? NSApp.mainWindow {
+                            let isLauncher = keyWindow.title == "VoltDB Connection Manager" ||
+                                             keyWindow.title == "VoltDB" ||
+                                             (!keyWindow.styleMask.contains(.resizable) && keyWindow.frame.width <= 850)
+                            if !isLauncher {
+                                NotificationCenter.default.post(name: .newQueryTab, object: nil)
+                                return nil
+                            }
+                        }
+                    }
+
                     // Cmd+P -> Command Palette
-                    if characters == "p" && !event.modifierFlags.contains(.shift) {
+                    if characters == "p" && !event.modifierFlags.contains(.shift) && !event.modifierFlags.contains(.option) {
                         NotificationCenter.default.post(name: .openCommandPalette, object: nil)
                         return nil // Consume event
+                    }
+
+                    // Cmd+K -> Database Picker Popover
+                    if characters == "k" && !event.modifierFlags.contains(.shift) && !event.modifierFlags.contains(.option) {
+                        NotificationCenter.default.post(name: .toggleDatabasePicker, object: nil)
+                        return nil
+                    }
+
+                    // Ctrl+Cmd+C -> Switch Connection Popover
+                    if characters == "c" && event.modifierFlags.contains(.control) {
+                        NotificationCenter.default.post(name: .toggleConnectionsPicker, object: nil)
+                        return nil
+                    }
+
+                    // Cmd+. -> Stop Query
+                    if characters == "." {
+                        NotificationCenter.default.post(name: .stopQuery, object: nil)
+                        return nil
+                    }
+
+                    // Shift+Cmd+[ -> Previous Tab
+                    if characters == "[" && event.modifierFlags.contains(.shift) {
+                        NotificationCenter.default.post(name: .selectPreviousTab, object: nil)
+                        return nil
+                    }
+
+                    // Shift+Cmd+] -> Next Tab
+                    if characters == "]" && event.modifierFlags.contains(.shift) {
+                        NotificationCenter.default.post(name: .selectNextTab, object: nil)
+                        return nil
                     }
                     
                     // Cmd+1 to Cmd+9 -> Switch to Tab

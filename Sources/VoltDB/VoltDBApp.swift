@@ -8,12 +8,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
         
+        // Disable macOS window tabbing and tab bars
+        NSWindow.allowsAutomaticWindowTabbing = false
+        for window in NSApp.windows {
+            window.tabbingMode = .disallowed
+        }
+        
         KeyboardShortcutManager.setupGlobalShortcuts()
         
         if let window = NSApp.windows.first {
+            window.tabbingMode = .disallowed
             window.center()
             window.makeKeyAndOrderFront(nil)
         }
+        
+        removeTabBarMenuItems()
+        
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(windowDidBecomeKey(_:)),
+            name: NSWindow.didBecomeKeyNotification,
+            object: nil
+        )
+        
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(menuDidAddItem(_:)),
+            name: NSMenu.didAddItemNotification,
+            object: nil
+        )
         
         // Watch for window close to re-open Connection Manager when all workspace windows are gone
         NotificationCenter.default.addObserver(
@@ -22,6 +45,56 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             name: NSWindow.willCloseNotification,
             object: nil
         )
+    }
+    
+    func applicationWillTerminate(_ notification: Notification) {
+        for state in TabState.activeInstances.allObjects {
+            state.saveSession()
+        }
+    }
+    
+    @objc private func windowDidBecomeKey(_ notification: Notification) {
+        if let window = notification.object as? NSWindow {
+            window.tabbingMode = .disallowed
+        }
+        removeTabBarMenuItems()
+    }
+    
+    @objc private func menuDidAddItem(_ notification: Notification) {
+        DispatchQueue.main.async { [weak self] in
+            self?.removeTabBarMenuItems()
+        }
+    }
+    
+    private func removeTabBarMenuItems() {
+        guard let mainMenu = NSApp.mainMenu else { return }
+        let blockedSelectors: Set<String> = [
+            "toggleTabBar:",
+            "toggleTabOverview:"
+        ]
+        let blockedTitles: Set<String> = [
+            "Show Tab Bar",
+            "Hide Tab Bar",
+            "Show All Tabs"
+        ]
+        
+        func cleanMenu(_ menu: NSMenu) {
+            var indicesToRemove: [Int] = []
+            for (idx, item) in menu.items.enumerated() {
+                if let submenu = item.submenu {
+                    cleanMenu(submenu)
+                }
+                let actionName = item.action != nil ? NSStringFromSelector(item.action!) : ""
+                if blockedSelectors.contains(actionName) || blockedTitles.contains(item.title) {
+                    indicesToRemove.append(idx)
+                }
+            }
+            for idx in indicesToRemove.reversed() {
+                menu.removeItem(at: idx)
+            }
+        }
+        
+        cleanMenu(mainMenu)
     }
     
     private func isLauncherWindow(_ window: NSWindow?) -> Bool {
@@ -179,6 +252,18 @@ struct WindowRootView: View {
     
     private func connect(to targetId: UUID?, force: Bool = false) async {
         guard let targetId = targetId else { return }
+        
+        // Always refresh connections, custom groups, and group colors from disk
+        appState.loadConnections()
+        appState.loadCustomGroups()
+        appState.loadGroupColors()
+        
+        if let config = appState.savedConnections.first(where: { $0.id == targetId }) {
+            if appState.activeConnection?.id == targetId {
+                appState.activeConnection = config
+            }
+        }
+        
         if !force {
             guard appState.connectionStatus != .connected && appState.connectionStatus != .connecting else { return }
         } else {
@@ -186,9 +271,6 @@ struct WindowRootView: View {
             if appState.connectionStatus == .connected && appState.activeConnection?.id == targetId { return }
         }
         
-        appState.loadConnections()
-        appState.loadCustomGroups()
-        appState.loadGroupColors()
         guard let config = appState.savedConnections.first(where: { $0.id == targetId }) else { return }
         
         await appState.connect(config: config)
@@ -232,7 +314,7 @@ struct VoltDBApp: App {
                         NotificationCenter.default.post(name: .newQueryTab, object: nil)
                     }
                 }
-                .keyboardShortcut("n", modifiers: .command)
+                .keyboardShortcut("t", modifiers: .command)
                 
                 Button("Close Tab") {
                     if let keyWindow = NSApp.keyWindow ?? NSApp.mainWindow {
@@ -272,24 +354,53 @@ struct VoltDBApp: App {
                 Button("Run All Queries") {
                     NotificationCenter.default.post(name: .runAllQueries, object: nil)
                 }
-                .keyboardShortcut(.return, modifiers: [.command, .control, .shift])
+                .keyboardShortcut(.return, modifiers: [.command, .shift])
+
+                Button("Stop Running Query") {
+                    NotificationCenter.default.post(name: .stopQuery, object: nil)
+                }
+                .keyboardShortcut(".", modifiers: .command)
+
+                Button("Explain Query") {
+                    NotificationCenter.default.post(name: .explainQuery, object: nil)
+                }
+                .keyboardShortcut("e", modifiers: [.command, .option])
+
+                Divider()
 
                 Button("Format SQL") {
                     NotificationCenter.default.post(name: .formatSQL, object: nil)
                 }
                 .keyboardShortcut("i", modifiers: [.command, .shift])
+
+                Button("Toggle Comment") {
+                    NotificationCenter.default.post(name: .toggleComment, object: nil)
+                }
+                .keyboardShortcut("/", modifiers: .command)
             }
 
             CommandMenu("Data") {
                 Button("New Row") {
                     NotificationCenter.default.post(name: .addNewRow, object: nil)
                 }
-                .keyboardShortcut("n", modifiers: [.command, .shift])
+                .keyboardShortcut("n", modifiers: [.command, .option])
                 
                 Divider()
                 
                 Button("Commit Changes") {
-                    NotificationCenter.default.post(name: .commitChanges, object: nil)
+                    if let keyWindow = NSApp.keyWindow ?? NSApp.mainWindow {
+                        let isLauncher = keyWindow.title == "VoltDB Connection Manager" ||
+                                         keyWindow.title == "VoltDB" ||
+                                         (!keyWindow.styleMask.contains(.resizable) && keyWindow.frame.width <= 850)
+                        if isLauncher {
+                            keyWindow.makeFirstResponder(nil)
+                            NotificationCenter.default.post(name: .saveConnection, object: nil)
+                        } else {
+                            NotificationCenter.default.post(name: .commitChanges, object: nil)
+                        }
+                    } else {
+                        NotificationCenter.default.post(name: .commitChanges, object: nil)
+                    }
                 }
                 .keyboardShortcut("s", modifiers: .command)
 
@@ -300,13 +411,59 @@ struct VoltDBApp: App {
 
                 Divider()
 
-                Button("Refresh Schema") {
+                Button("Reload Data / Refresh Schema") {
                     NotificationCenter.default.post(name: .refreshSchema, object: nil)
                 }
                 .keyboardShortcut("r", modifiers: .command)
+
+                Divider()
+
+                Button("Previous Page") {
+                    NotificationCenter.default.post(name: .previousPage, object: nil)
+                }
+                .keyboardShortcut("[", modifiers: .command)
+
+                Button("Next Page") {
+                    NotificationCenter.default.post(name: .nextPage, object: nil)
+                }
+                .keyboardShortcut("]", modifiers: .command)
+
+                Button("First Page") {
+                    NotificationCenter.default.post(name: .firstPage, object: nil)
+                }
+                .keyboardShortcut(.upArrow, modifiers: [.command, .option])
+
+                Button("Last Page") {
+                    NotificationCenter.default.post(name: .lastPage, object: nil)
+                }
+                .keyboardShortcut(.downArrow, modifiers: [.command, .option])
             }
 
-            CommandMenu("View") {
+            CommandMenu("Navigate") {
+                Button("Previous Tab") {
+                    NotificationCenter.default.post(name: .selectPreviousTab, object: nil)
+                }
+                .keyboardShortcut("[", modifiers: [.command, .shift])
+
+                Button("Next Tab") {
+                    NotificationCenter.default.post(name: .selectNextTab, object: nil)
+                }
+                .keyboardShortcut("]", modifiers: [.command, .shift])
+
+                Divider()
+
+                Button("Select Database...") {
+                    NotificationCenter.default.post(name: .toggleDatabasePicker, object: nil)
+                }
+                .keyboardShortcut("k", modifiers: .command)
+
+                Button("Switch Connection...") {
+                    NotificationCenter.default.post(name: .toggleConnectionsPicker, object: nil)
+                }
+                .keyboardShortcut("c", modifiers: [.command, .control])
+            }
+
+            CommandGroup(replacing: .sidebar) {
                 Button("Open Anything (Command Palette)") {
                     NotificationCenter.default.post(name: .openCommandPalette, object: nil)
                 }
@@ -343,6 +500,7 @@ extension Notification.Name {
     static let runCurrentQuery = Notification.Name("VoltDB.runCurrentQuery")
     static let runAllQueries = Notification.Name("VoltDB.runAllQueries")
     static let formatSQL = Notification.Name("VoltDB.formatSQL")
+    static let toggleComment = Notification.Name("VoltDB.toggleComment")
     static let commitChanges = Notification.Name("VoltDB.commitChanges")
     static let rollbackChanges = Notification.Name("VoltDB.rollbackChanges")
     static let refreshSchema = Notification.Name("VoltDB.refreshSchema")
@@ -359,4 +517,13 @@ extension Notification.Name {
     static let saveConnection = Notification.Name("VoltDB.saveConnection")
     static let groupColorsChanged = Notification.Name("VoltDB.groupColorsChanged")
     static let connectionsChanged = Notification.Name("VoltDB.connectionsChanged")
+    static let selectPreviousTab = Notification.Name("VoltDB.selectPreviousTab")
+    static let selectNextTab = Notification.Name("VoltDB.selectNextTab")
+    static let explainQuery = Notification.Name("VoltDB.explainQuery")
+    static let toggleDatabasePicker = Notification.Name("VoltDB.toggleDatabasePicker")
+    static let toggleConnectionsPicker = Notification.Name("VoltDB.toggleConnectionsPicker")
+    static let previousPage = Notification.Name("VoltDB.previousPage")
+    static let nextPage = Notification.Name("VoltDB.nextPage")
+    static let firstPage = Notification.Name("VoltDB.firstPage")
+    static let lastPage = Notification.Name("VoltDB.lastPage")
 }

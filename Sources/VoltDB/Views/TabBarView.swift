@@ -201,7 +201,7 @@ struct TabBarView: View {
             // Center / Right: Connection & DB Pill (Static Display)
             HStack(spacing: 4) {
                 Circle()
-                    .fill(appState.connectionStatus == .connected ? AppTheme.success : (appState.connectionStatus == .connecting ? AppTheme.warning : AppTheme.error))
+                    .fill(connectionDotColor)
                     .frame(width: 6, height: 6)
                 
                 Text(appState.activeConnection?.name ?? "No Connection")
@@ -216,17 +216,10 @@ struct TabBarView: View {
                             .foregroundColor(AppTheme.textSecondary)
                     }
                     
-                    if appState.activeConnection?.isProduction == true {
-                        Text("PROD")
-                            .font(.system(size: 7, weight: .bold))
-                            .foregroundColor(.white)
-                            .padding(.horizontal, 3)
-                            .padding(.vertical, 1)
-                            .background(
-                                RoundedRectangle(cornerRadius: 2.5)
-                                    .fill(Color.red.opacity(0.85))
-                            )
-                            .help("Production Environment")
+                    if let activeConn = appState.activeConnection, let grp = activeConn.displayGroup {
+                        ConnectionGroupBadge(group: grp, size: .tiny)
+                            .environment(appState)
+                            .help("Group: \(grp)")
                     }
                     
                     Rectangle()
@@ -249,7 +242,7 @@ struct TabBarView: View {
                         .help("SSL Encrypted Connection")
                 }
             }
-            .contentTransition(.identity)
+            .transaction { $0.animation = nil }
             .padding(.horizontal, 7)
             .padding(.vertical, 3)
             .background(AppTheme.backgroundTertiary)
@@ -257,7 +250,7 @@ struct TabBarView: View {
             .overlay(
                 RoundedRectangle(cornerRadius: 8)
                     .stroke(
-                        appState.activeConnection?.isProduction == true ? Color.red.opacity(0.5) : AppTheme.border.opacity(0.5),
+                        activePillBorderColor,
                         lineWidth: 1
                     )
             )
@@ -325,6 +318,15 @@ struct TabBarView: View {
                 .frame(height: 1),
             alignment: .bottom
         )
+        .onReceive(NotificationCenter.default.publisher(for: .groupColorsChanged)) { _ in
+            appState.loadGroupColors()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .toggleDatabasePicker)) { _ in
+            showDatabasesPopover.toggle()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .toggleConnectionsPicker)) { _ in
+            showConnectionsPopover.toggle()
+        }
     }
     
     private func scrollTab(direction: Int, proxy: ScrollViewProxy) {
@@ -355,6 +357,31 @@ struct TabBarView: View {
         window.performZoom(nil)
     }
     
+    private var activeGroupColor: Color? {
+        guard let grp = appState.activeConnection?.displayGroup else { return nil }
+        return Color(hex: appState.groupColorHex(for: grp))
+    }
+    
+    private var connectionDotColor: Color {
+        switch appState.connectionStatus {
+        case .connecting:
+            return AppTheme.textMuted
+        case .error:
+            return AppTheme.error
+        case .disconnected:
+            return AppTheme.textMuted
+        case .connected:
+            return activeGroupColor ?? AppTheme.success
+        }
+    }
+    
+    private var activePillBorderColor: Color {
+        if let groupColor = activeGroupColor {
+            return groupColor.opacity(0.5)
+        }
+        return AppTheme.border.opacity(0.5)
+    }
+    
     private var databasePillText: String {
         switch appState.connectionStatus {
         case .connected:
@@ -373,7 +400,7 @@ struct TabBarView: View {
         case .connected:
             return AppTheme.textSecondary
         case .connecting:
-            return AppTheme.warning
+            return AppTheme.textSecondary
         case .error:
             return AppTheme.error
         case .disconnected:

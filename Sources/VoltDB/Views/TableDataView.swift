@@ -368,6 +368,38 @@ struct TableDataView: View {
         .onReceive(NotificationCenter.default.publisher(for: .addNewRow)) { _ in
             addNewRow()
         }
+        .onReceive(NotificationCenter.default.publisher(for: .refreshSchema)) { _ in
+            guard tabState.activeTab?.tableName == tableName else { return }
+            loadData()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .previousPage)) { _ in
+            guard tabState.activeTab?.tableName == tableName else { return }
+            if currentPage > 0 {
+                currentPage -= 1
+                loadData()
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .nextPage)) { _ in
+            guard tabState.activeTab?.tableName == tableName else { return }
+            if (currentPage + 1) < totalPages {
+                currentPage += 1
+                loadData()
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .firstPage)) { _ in
+            guard tabState.activeTab?.tableName == tableName else { return }
+            if currentPage != 0 {
+                currentPage = 0
+                loadData()
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .lastPage)) { _ in
+            guard tabState.activeTab?.tableName == tableName else { return }
+            if (currentPage + 1) < totalPages {
+                currentPage = totalPages - 1
+                loadData()
+            }
+        }
         .sheet(isPresented: $isShowingCommitReviewSheet) {
             CommitReviewSheetView(
                 initialSQL: pendingCommitSQL.isEmpty ? stagedChanges.toSQL().joined(separator: "\n\n") : pendingCommitSQL,

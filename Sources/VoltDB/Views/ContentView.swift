@@ -241,6 +241,9 @@ struct ContentView: View {
         .onAppear {
             setupWorkspaceWindow(nil)
         }
+        .onDisappear {
+            tabState.saveSession()
+        }
         .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { notif in
             if let window = notif.object as? NSWindow, window.title != "VoltDB Connection Manager" && window.title != "VoltDB" {
                 if self.currentWindow == nil || self.currentWindow == window {
@@ -281,6 +284,20 @@ struct ContentView: View {
             guard isTargetWindowActive else { return }
             withAnimation(.spring(response: 0.28, dampingFraction: 0.86)) {
                 isRightPanelVisible.toggle()
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .selectPreviousTab)) { _ in
+            guard isTargetWindowActive else { return }
+            tabState.selectPreviousTab()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .selectNextTab)) { _ in
+            guard isTargetWindowActive else { return }
+            tabState.selectNextTab()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .switchToTab)) { notif in
+            guard isTargetWindowActive else { return }
+            if let index = notif.object as? Int {
+                tabState.selectTab(at: index)
             }
         }
         .alert(
@@ -413,6 +430,7 @@ struct ContentView: View {
             self.windowCloseDelegate = delegate
             window.delegate = delegate
             
+            window.tabbingMode = .disallowed
             window.styleMask.insert([.resizable, .miniaturizable, .titled, .closable, .fullSizeContentView])
             window.minSize = NSSize(width: 850, height: 500)
             window.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
@@ -463,6 +481,7 @@ final class WorkspaceWindowDelegate: NSObject, NSWindowDelegate {
     
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         if isDisconnectingAndClosing {
+            tabState.saveSession()
             return true
         }
         
@@ -489,6 +508,8 @@ final class WorkspaceWindowDelegate: NSObject, NSWindowDelegate {
             }
         }
         
+        tabState.saveSession()
+        
         if appState.connectionStatus == .connected || appState.connectionStatus == .connecting {
             isDisconnectingAndClosing = true
             Task {
@@ -506,6 +527,7 @@ final class WorkspaceWindowDelegate: NSObject, NSWindowDelegate {
     }
     
     func windowWillClose(_ notification: Notification) {
+        tabState.saveSession()
         if appState.connectionStatus == .connected || appState.connectionStatus == .connecting {
             Task {
                 await appState.disconnect()
